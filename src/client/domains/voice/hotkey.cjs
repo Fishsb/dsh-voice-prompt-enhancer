@@ -310,7 +310,10 @@ function VoiceHotkeyHost(props) {
     const fire = () => {
       if (!(voiceCfgState.value && voiceCfgState.value.autoEnhance === true)) return;
       if (typeof enhance !== 'function') return;
-      enhance(sessionId, draftRef.current, inputActions, draftRef);
+      // UD-0052（2026-11-08）：语音自动增强可单独设档位；空串 = 跟随全局（默认行为）。
+      //   ⚠ 手动 ✨ 增强**不走这条**，不受语音档位影响。
+      const override = voiceCfgState.value && voiceCfgState.value.autoEnhanceMode;
+      enhance(sessionId, draftRef.current, inputActions, draftRef, typeof override === 'string' && override ? override : undefined);
     };
     // ⚠ CHG-117（规整改造批 · 清口水词）：识别文本写回草稿**之后**，本地做一次纯规则清理。
     //   · 开关：`voice.filler.enabled`（默认开）；**关闭即整体跳过**（并记一次 skipped ⇒ 可见）。

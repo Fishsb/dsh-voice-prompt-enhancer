@@ -257,13 +257,28 @@ function isSwitchesRow(k) {
   return k.kids.filter((c) => c && c.props && typeof c.props.className === 'string' && /dsh-plg-tgl/.test(c.props.className)).length >= 2;
 }
 
-/** 取第一行 / 第二行（第一行 = 装多个开关的那行；第二行 = 其后的 dsh-plg-row）。 */
+/**
+ * 「静音行」谓词（2026-11-08 语音四件收口批订正）。
+ *
+ * ⚠ 病历：本文件原先以**位置**认第二行 —— `kids[kids.indexOf(row1) + 1]`。那是**位置绑定**：
+ *   UD-0052 在开关行与静音行之间插入了「档位/纠错窗口」双下拉行（`dsh-plg-row-duo`）之后，
+ *   `+1` 取到的是那条新行 ⇒ P14b/c/d/e/i/x-2/x-3/x-4 **集体红**（不是行为坏了，是判据认错了行）。
+ *   ⇒ 改成**语义谓词**：装 `type=range` 滑块的那个直接子元素就是静音行。
+ *   ⚠ 判据强度不降：本谓词**不**读 `dsh-vi-silence-row` 类（那正是 P14b/P14i 要咬的断言，
+ *     用它定位会让该断言变成恒真）；滑块被移走/换成别的控件时谓词认不出 ⇒ 仍会红。
+ */
+function isSilenceRow(k) {
+  if (!k || typeof k !== 'object' || !Array.isArray(k.kids)) return false;
+  return k.kids.some((c) => c && c.props && c.props.type === 'range');
+}
+
+/** 取第一行 / 第二行（第一行 = 装多个开关的那行；第二行 = 装滑块的那行，按语义定位而非位置）。 */
 function layoutRows(cfg) {
   const r = renderVoiceSection(cfg);
   const section = r.tree.kids[0];
   const kids = section.kids.filter((k) => k && typeof k === 'object');
   const row1 = kids.find(isSwitchesRow);
-  const row2 = kids[kids.indexOf(row1) + 1];
+  const row2 = kids.find(isSilenceRow);
   return { r, row1, row2 };
 }
 
@@ -352,7 +367,7 @@ test('VADSIL-P14d 单一事实源：0 档写 enabled=false 且 silenceMs 保持�
   const r = renderVoiceSection({ vad: { enabled: true, silenceMs: 5000 } });
   const rows = r.tree.kids[0].kids.filter((k) => k && typeof k === 'object');
   const row1 = rows.find(isSwitchesRow);
-  const { slider } = row2Parts(rows[rows.indexOf(row1) + 1]);
+  const { slider } = row2Parts(rows.find(isSilenceRow));
   // 走**真实滑块 onChange**把档位拨到 0
   slider.props.onChange({ target: { value: '0' } });
   assert.equal(r.S.voiceCfgState.value.vad.enabled, false, '0 档须置 enabled = false');
@@ -364,7 +379,8 @@ test('VADSIL-P14d 单一事实源：0 档写 enabled=false 且 silenceMs 保持�
   const again = renderVoiceSection({ vad: { enabled: false, silenceMs: 5000 } });
   const arows = again.tree.kids[0].kids.filter((k) => k && typeof k === 'object');
   const ar1 = arows.find(isSwitchesRow);
-  assert.equal(row2Parts(arows[arows.indexOf(ar1) + 1]).slider.props.value, '0', 'enabled=false ⇒ 滑块**自动到 0**（反向联动）');
+  assert.ok(ar1, '第一行（开关行）须在位');
+  assert.equal(row2Parts(arows.find(isSilenceRow)).slider.props.value, '0', 'enabled=false ⇒ 滑块**自动到 0**（反向联动）');
   // 关 → 开 往返：档位须保持 5（不得回落 2）
   const back = layoutRows({ vad: { enabled: true, silenceMs: r.S.voiceCfgState.value.vad.silenceMs } });
   assert.equal(row2Parts(back.row2).slider.props.value, '5', '关→开后滑块须回到 5（silenceMs 未被重置为 2000）');
@@ -592,7 +608,7 @@ function renderWithSource(src, cfg) {
   const tree = expand(api.VoiceSection({}));
   const kids = tree.kids[0].kids.filter((k) => k && typeof k === 'object');
   const row1 = kids.find(isSwitchesRow);
-  return { row1, row2: kids[kids.indexOf(row1) + 1], S };
+  return { row1, row2: kids.find(isSilenceRow), S };
 }
 
 test('VADSIL-P14x-1 变异①：开关仍留第一行 ⇒ P14 必红（判据有牙）', () => {

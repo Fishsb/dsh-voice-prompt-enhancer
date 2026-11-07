@@ -19,6 +19,12 @@ var FILLER_CHARS = ['嗯', '呃', '唔', '诶', '嘿', '唷'];
 // 既可能是语气词、也可能是**真实词头/词尾**的单字 ⇒ 仅当**孤立出现**才删（位置保护更严）。
 //  ⚠ 「儿」**不在表内**：它是儿化构词成分，不是语气词（它的保护改为「左邻是词字符则不动」+ 白名单）。
 var FILLER_CHARS_GUARDED = ['啊', '呀', '哦', '噢', '哎', '唉', '哟', '嘛', '咧', '咯', '喽'];
+// 英文口癖：只收「独立出现时才无意义」的单个口癖音。
+// ⚠ 只删孤立出现（两侧都是边界/标点/停顿符）；album 里的 um、number 里的 er 一律不动。
+// ⚠ 明确**不收** like / actually / basically / you know / I mean / sort of / kind of ——
+//   这些在 "I like it" / "Do you know him" 里是实义，删了就是改语义。
+// ⚠ 也不收 er：与 erm 重复，且独立出现时可能是缩写（"ER"）。
+const FILLER_CHARS_EN = ['um', 'uh', 'erm', 'hmm', 'mmm'];
 // 多字话语标记：**只在「孤立」或「即时重复」时**删（"然后我们做X"里的"然后"是真实连接词，删了会改语义）。
 //  ⚠ 分两档（判据不同）：
 //   · **无歧义话语标记**（"就是说"/"那个啥"…）—— 出现即为口水词 ⇒ 任一侧是边界即删；
@@ -168,6 +174,29 @@ function removeFillers(text, removed) {
   out = removeCharSet(out, FILLER_CHARS, false, removed);
   // 单字语气词（仅孤立才删）
   out = removeCharSet(out, FILLER_CHARS_GUARDED, true, removed);
+  // 英文口癖音（多字符 token，**只删孤立出现** —— 与 FILLER_CHARS 同一「孤立」路径，
+  //   ⛔ 不走 FILLER_PHRASES 那条短语路径：后者带「即时重复」判据，且词表语义是话语标记）。
+  out = removeEnFillers(out, removed);
+  return out;
+}
+
+// 英文口癖删除：大小写不敏感；**只删严格孤立**（两侧都是标点/空白/串首尾）。
+//   ⚠ 判据与 FILLER_CHARS 的单字路径同源（`isStrictlyIsolated`）：album 的 um、number 的 er
+//     两侧有词字符 ⇒ 不孤立 ⇒ 一律不动。
+function removeEnFillers(text, removed) {
+  var out = text, i = 0;
+  while (i < out.length) {
+    var hit = null;
+    for (var k = 0; k < FILLER_CHARS_EN.length; k++) {
+      var w = FILLER_CHARS_EN[k];
+      if (out.slice(i, i + w.length).toLowerCase() === w) { hit = w; break; }
+    }
+    if (!hit) { i++; continue; }
+    var j = i + hit.length;
+    if (!isStrictlyIsolated(out, i, j)) { i++; continue; }
+    removed.push({ kind: 'filler', text: out.slice(i, j), count: 1 });
+    out = out.slice(0, i) + out.slice(j);
+  }
   return out;
 }
 
@@ -199,7 +228,12 @@ function tidy(text) {
     //   仍属"只删"：不新增任何字符。
     .replace(/^[\s—～~…·]+/, '')
     .replace(/[\s—～~…·]+$/, '')
-    .replace(/^\s*[，。！？、；：]+/, '')          // 串首孤立标点
+    .replace(/^\s*[，。！？、；：]+/, '')          // 串首孤立标点（中文全角）
+    // ⚠ 2026-11-08（语音四件收口批 · O1）：英文口癖删掉后会留下**串首半角**标点
+    //   （"um, I think so" ⇒ ", I think so"；"Uh... maybe" ⇒ "... maybe"）。
+    //   只在**后接空白或串尾**时清（`(?=\s|$)`）—— 否则会把 ".env 配置" 这类
+    //   以半角标点开头的实义文本削成 "env 配置"（那是改语义，不是清口水词）。
+    .replace(/^\s*[,.;:!?]+(?=\s|$)/, '')
     .replace(/[，。！？、；：]+$/, function (m) { return m.length > 1 ? m[0] : m; })
     .trim();
 }

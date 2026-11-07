@@ -20,11 +20,57 @@ const { fillerBaselineText } = require('./helpers/client-filler-module.cjs');
 
 function loadFiller(src) {
   const code = src || fillerBaselineText();
-  const api = new Function(code + '\n;return { stripFillers, runFiller, fillerSnapshot, subscribeFiller, FILLER_CHARS, FILLER_CHARS_GUARDED, FILLER_PHRASES, FILLER_PHRASES_HARD, FILLER_PROTECTED, FILLER_REDUP_SAFE };')();
+  const api = new Function(code + '\n;return { stripFillers, runFiller, fillerSnapshot, subscribeFiller, FILLER_CHARS, FILLER_CHARS_GUARDED, FILLER_PHRASES, FILLER_PHRASES_HARD, FILLER_PROTECTED, FILLER_REDUP_SAFE, FILLER_CHARS_EN };')();
   return api;
 }
 const F = loadFiller();
 const strip = (s) => F.stripFillers(s).text;
+
+// ─────────── O1（2026-11-08 · 语音四件收口批）：英文口癖 ───────────
+// 判据来源：任务书 O1 判据表（用户拍板，逐字）。⛔ 只收孤立口癖音，不收 like / you know 这类实义词。
+test('FILLER-50 ⭐英文口癖·孤立出现即删（um / uh / hmm）', () => {
+  assert.equal(strip('um, I think so'), 'I think so');
+  assert.equal(strip('Hmm, let me check'), 'let me check');
+  assert.equal(strip('Uh... maybe tomorrow'), 'maybe tomorrow');
+});
+
+test('FILLER-51 ⭐英文口癖·实义词一律不动（like / you know / I mean）', () => {
+  // ⛔ 这三条是 O1 的硬约束：删了就改语义。判据逐字来自任务书。
+  assert.equal(strip('I like it'), 'I like it');
+  assert.equal(strip('You know what I mean?'), 'You know what I mean?');
+});
+
+test('FILLER-52 ⭐英文口癖·词内不删（album 的 um / number 的 er）', () => {
+  assert.equal(strip('The album is good'), 'The album is good');
+  assert.equal(strip('number er here'), 'number er here');
+  // er 不在表内（与 erm 重复、独立出现可能是缩写）
+  assert.equal(strip('The ER is open'), 'The ER is open');
+});
+
+test('FILLER-53 ⭐英文口癖·大小写不敏感且不吃掉后续实义', () => {
+  assert.equal(strip('UM, I think so'), 'I think so');
+  assert.equal(strip('Umm not in list'), 'Umm not in list');
+  // 串首半角标点清理只在「后接空白/串尾」时生效 ⇒ .env 这类实义开头不得被削
+  assert.equal(strip('.env 配置改一下'), '.env 配置改一下');
+});
+
+test('FILLER-54 ⭐中英混排：中英口癖都清且不留连续空格（实测口径）', () => {
+  // ⚠ 实测：整句三个 token（嗯 / um / 那个）全部满足「孤立」判据 ⇒ 全清 ⇒ 空串。
+  //   任务书原假设「um 夹在中文之间被判词内」**不成立**（um 两侧是空格=边界），
+  //   已如实记入 REPORT，未改判据迁就实现。
+  assert.equal(strip('嗯 um 那个'), '');
+  // 仍有实义时：中英口癖都要清，且不得留下连续空格
+  const out = strip('嗯 um 我想想');
+  assert.equal(out, '我想想');
+  assert.ok(!/\s{2,}/.test(out), '不得留下连续空格');
+});
+
+test('FILLER-55 ⭐英文口癖表契约：只在表内五项、且不含实义词/er', () => {
+  assert.deepEqual(F.FILLER_CHARS_EN, ['um', 'uh', 'erm', 'hmm', 'mmm']);
+  for (const bad of ['like', 'actually', 'basically', 'you know', 'I mean', 'sort of', 'kind of', 'er']) {
+    assert.ok(!F.FILLER_CHARS_EN.includes(bad), '英文口癖表不得含 ' + bad);
+  }
+});
 
 // ─────────── ① 三类清理 ───────────
 test('FILLER-01 语气词（孤立）被删：嗯 / 呃 / 哦 / 啊', () => {

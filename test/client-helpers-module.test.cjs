@@ -190,3 +190,40 @@ test('CHELP-09 产物内联增强会话模块，仍自包含', () => {
   assert.equal(client.includes('src/client/helpers.js'), false);
   assert.equal((client.match(/require\(['"]\.\.?\//g) || []).length, 0);
 });
+
+// ─────────── UD-0052（2026-11-08 · 语音四件收口批）：自动增强档位 ───────────
+// 判据（用户拍板）：空串/非法 ⇒ 行为逐字一致（仍取 resolveActualMode）；
+//   modeOverride 合法 ⇒ 只改 `mode` 一处，`config` 原样传（⛔ 不构造 config 副本）。
+test('CHELP-10 ⭐enhance 第 5 参 modeOverride：只覆盖 mode，config 原样传', async () => {
+  const { api, host } = createHarness({ config: { mode: 'smart', memory: false } });
+  api.setActiveSession('m1');
+  const draftRef = { current: '原稿' };
+  api.enhance('m1', '原稿', { setDraft: () => {} }, draftRef, 'lite');
+  await flush();
+  const req = host.calls.filter((c) => c.method === 'enhance').at(-1).args;
+  assert.equal(req.mode, 'lite', 'modeOverride 合法值须覆盖档位');
+  assert.deepEqual(req.config, { mode: 'smart', memory: false }, 'config 必须原样传（不得为改档位构造副本）');
+});
+
+test('CHELP-11 ⭐modeOverride 缺省/非法 ⇒ 与 resolveActualMode 结果逐字一致', async () => {
+  for (const override of [undefined, null, '', 'foo', 42, 'MEMORY']) {
+    const { api, host } = createHarness({ config: { mode: 'smart', memory: false } });
+    api.setActiveSession('m2');
+    api.enhance('m2', '原稿', { setDraft: () => {} }, { current: '原稿' }, override);
+    await flush();
+    const req = host.calls.filter((c) => c.method === 'enhance').at(-1).args;
+    const expected = api.resolveActualMode('m2', { mode: 'smart', memory: false }).mode;
+    assert.equal(req.mode, expected, '非法覆盖值 ' + String(override) + ' 必须回落 resolveActualMode');
+  }
+});
+
+test('CHELP-12 ⭐手动 ✨ 路径不受语音档位影响（fire() 才传第 5 参）', () => {
+  const hk = fs.readFileSync(path.join(REPO_ROOT, 'src/client/domains/voice/hotkey.cjs'), 'utf8');
+  const fire = hk.slice(hk.indexOf('const fire = () =>'), hk.indexOf('const fire = () =>') + 900);
+  assert.ok(/voiceCfgState\.value\.autoEnhanceMode/.test(fire), '语音 fire() 须读 autoEnhanceMode');
+  assert.ok(/enhance\(sessionId, draftRef\.current, inputActions, draftRef, /.test(fire),
+    'fire() 须把档位作为第 5 参传给 enhance');
+  // 手动 ✨：helpers 内部不读 voice 配置（⛔ 手动增强不得受语音档位影响）
+  const helpers = fs.readFileSync(path.join(REPO_ROOT, 'src/client/common/helpers.cjs'), 'utf8');
+  assert.equal(/autoEnhanceMode/.test(helpers), false, 'helpers 不得读 autoEnhanceMode（手动 ✨ 不受影响）');
+});

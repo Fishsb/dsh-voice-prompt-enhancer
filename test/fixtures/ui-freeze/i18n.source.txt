@@ -261,6 +261,14 @@ const ZH = {
   voiceAutoEnhanceOn: '开',
   voiceAutoEnhanceOff: '关',
   voiceAutoEnhanceTip: '开启后，语音识别完成自动触发提示词增强',
+  // UD-0052 / O4（2026-11-08 · 语音四件收口批）：两个新档位控件文案。
+  //   ⚠ 模式名一律复用 `modeLabel*` 键（⛔ 不在此新写模式名）。
+  voiceAutoEnhanceModeLabel: '自动增强档位',
+  voiceAutoEnhanceModeTip: '语音自动增强使用的档位；「跟随全局」= 用设置页的当前模式（默认）。手动 ✨ 增强不受此设置影响',
+  voiceAutoEnhanceModeFollow: '跟随全局',
+  voiceCorrectionWindowLabel: '纠错参考轮数',
+  voiceCorrectionWindowTip: '纠错时参考最近几轮会话（1–3 轮，默认 1 轮）',
+  voiceCorrectionWindowUnit: '轮',
   // CHG-143（纠错语音独立步）：语音纠错的开关与诊断文案（与自动增强**两个独立开关**）。
   //   ⚠ 显示名与内部标识符分离（CHG-133 口径）：内部键 `voice.correction`，显示名「语音纠错」。
   voiceCorrectionShort: '语音纠错',
@@ -609,6 +617,13 @@ const EN = {
   voiceAutoEnhanceOn: ' ON',
   voiceAutoEnhanceOff: ' OFF',
   voiceAutoEnhanceTip: 'Auto-trigger prompt enhancement after speech recognition',
+  // UD-0052 / O4: new mode/window controls (mode names reuse modeLabel* keys).
+  voiceAutoEnhanceModeLabel: 'Auto-enhance mode',
+  voiceAutoEnhanceModeTip: 'Mode used by voice auto-enhance; "Follow global" uses the mode selected in settings (default). Manual ✨ enhancement is unaffected',
+  voiceAutoEnhanceModeFollow: 'Follow global',
+  voiceCorrectionWindowLabel: 'Correction context rounds',
+  voiceCorrectionWindowTip: 'How many recent rounds of the session the correction step may reference (1-3 rounds, default 1)',
+  voiceCorrectionWindowUnit: 'round(s)',
   voiceCorrectionShort: 'Correct',
   voiceCorrectionTip: 'When on, correct the recognized speech text first (voice path only; manual ✨ enhancement never corrects). Independent from Auto-enhance: correction-only stops after correcting, both on means correct then enhance',
   voiceCorrectionSection: 'Speech correction',

@@ -5,6 +5,7 @@
 const {
   MEMORY_ROUNDS_MAX,
   SEEN_KEY_PREFIX,
+  MODE_VALUES,
 } = require('./constants.cjs');
 const { RPC_METHODS } = require('../../shared/contracts/rpc.cjs');
 
@@ -199,7 +200,10 @@ function createClientHelpers(deps) {
     return MODEL_DISPLAY_NAMES[id] || id;
   }
 
-  function enhance(sessionId, draft, inputActions, draftRef) {
+  // UD-0052（2026-11-08 · 语音四件收口批）：第 5 个可选入参 `modeOverride` = 本次增强的档位覆盖。
+  //   ⚠ **只改 `mode` 一处**：`config` 原样传（构造 config 副本会连带改掉预算/超时/模板）。
+  //   ⚠ 手动 ✨ 增强不传该参 ⇒ 行为逐字不变（仍取 `resolveActualMode` 的结果）。
+  function enhance(sessionId, draft, inputActions, draftRef, modeOverride) {
     const session = storeFor(sessionId);
     if (session.phase === 'enhancing') {
       const previousSeq = session.seq;
@@ -219,7 +223,8 @@ function createClientHelpers(deps) {
     const parts = splitCommand(draft);
     const config = configState.value;
     const actual = resolveActualMode(sessionId, config);
-    const request = { sessionId, seq, text: parts.body, config, mode: actual.mode };
+    const mode = (typeof modeOverride === 'string' && MODE_VALUES.includes(modeOverride)) ? modeOverride : actual.mode;
+    const request = { sessionId, seq, text: parts.body, config, mode };
     if (actual.seed) request.seed = true;
     if (actual.memory) request.memory = actual.memory;
     if (session.optimized && actual.memory && actual.memory.rounds.length > 0) request.continue = true;

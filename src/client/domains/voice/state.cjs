@@ -26,6 +26,18 @@ function createVoiceState(deps) {
   const normalizeDictionary = typeof d.normalizeDictionaryEntries === 'function'
     ? d.normalizeDictionaryEntries
     : (list) => (Array.isArray(list) ? list : []);
+  // O4 / UD-0052（2026-11-08 · 语音四件收口批）：两个新白名单字段的归一实现同样由装配层注入
+  //   （与 host 共用 `lib/voice-config.cjs`）；未注入时用**逐字同口径**的本地兜底。
+  const ENHANCE_MODES = ['base', 'lite', 'standard', 'smart', 'publish'];
+  const normalizeAutoEnhanceMode = typeof d.normalizeAutoEnhanceMode === 'function'
+    ? d.normalizeAutoEnhanceMode
+    : (value) => (typeof value === 'string' && ENHANCE_MODES.indexOf(value) >= 0 ? value : '');
+  const normalizeCorrectionWindowRounds = typeof d.normalizeCorrectionWindowRounds === 'function'
+    ? d.normalizeCorrectionWindowRounds
+    : (value) => {
+      const n = typeof value === 'number' ? value : NaN;
+      return Number.isInteger(n) && n >= 1 && n <= 3 ? n : 1;
+    };
   const consoleSvc = d.console || (typeof console !== 'undefined' ? console : null);
   const VOICE_CFG_DEFAULTS = JSON.parse(JSON.stringify(d.defaults || {}));
   const VOICE_CFG_KEY = 'dsh.prompt-enhancer.voice';
@@ -64,7 +76,14 @@ function createVoiceState(deps) {
         combo: typeof hk.combo === 'string' && hk.combo ? hk.combo : '',
       },
       autoEnhance: (v && v.autoEnhance === true) ? true : false,
-      correction: { enabled: (v && v.correction && v.correction.enabled === true) ? true : false },
+      // UD-0052：语音自动增强档位。空串 = 跟随全局 `config.mode`（默认行为）。
+      //   ⚠ 与 host `sanitizeVoiceCfg` **同批同形**（`M-3`）。
+      autoEnhanceMode: normalizeAutoEnhanceMode(v && v.autoEnhanceMode),
+      // O4：纠错参考窗口轮数（1–3），默认 1。⚠ 同批同形（`M-3`）。
+      correction: {
+        enabled: (v && v.correction && v.correction.enabled === true) ? true : false,
+        windowRounds: normalizeCorrectionWindowRounds(v && v.correction ? v.correction.windowRounds : undefined),
+      },
       // UD-0055 / UD-0057（学习词典）：与 host `sanitizeVoiceCfg` **同批同形**（`M-3`）。
       //   归一逻辑不在此重写 —— 由装配层注入的契约实现（`lib/voice-config.cjs`）提供，
       //   避免第三份白名单（同族缺陷 M-2/M-3）。
@@ -185,6 +204,8 @@ function createVoiceState(deps) {
     VOICE_CFG_KEY,
     VOICE_CFG_DEFAULTS,
     normalizeVadSilenceMs,
+    normalizeAutoEnhanceMode,
+    normalizeCorrectionWindowRounds,
     vadSilenceMsOf,
     vadRequiredQuiet,
     voiceCfgState,

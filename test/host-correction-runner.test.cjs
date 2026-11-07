@@ -9,6 +9,7 @@ const path = require('node:path');
 const { REPO_ROOT } = require('../scripts/lib/chunk-decode.mjs');
 const {
   CORRECTION_WINDOW,
+  resolveCorrectionWindow,
   CORRECTION_TIMEOUT_MS,
   CORRECTION_MAX_TOKENS,
   CORRECTION_OUTPUT_LIMIT,
@@ -116,4 +117,67 @@ test('HCR-05 产物内联执行域模块（无外部 require），RPC 仍由 chu
   assert.ok(host.includes('voice/correct'), 'voice/correct RPC 必须仍在位');
   assert.ok(host.includes('return correctionRunner.runCorrection(args);'), '既有 runCorrection 包装必须委托模块');
   assert.equal((host.match(/require\(/g) || []).length, 0, 'host 产物不得含外部 require');
+});
+
+// ─────────── O4（2026-11-08 · 语音四件收口批）：纠错参考窗口可配 ───────────
+// 判据（用户拍板）：默认/非法一律回落 [1,1]；windowRounds=N（1–3）⇒ [1,N]。
+//   ⚠ 只改「读多少轮」，⛔ 不改 UD-0051「必须有会话参考」这条。
+test('HCR-06 ⭐resolveCorrectionWindow：默认/非法回落 [1,1]，1–3 取 [1,N]', () => {
+  assert.deepEqual(resolveCorrectionWindow(undefined), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({}), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: {} }), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: null } }), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 0 } }), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 9 } }), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: '3' } }), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 1 } }), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 2 } }), [1, 2]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 3 } }), [1, 3]);
+  // 旧常量本身**不得被改**（HCR-01 的断言仍逐字成立）
+  assert.deepEqual(CORRECTION_WINDOW, [1, 1]);
+});
+
+test('HCR-07 ⭐fetchCorrectionHistory 用配置窗口读轮次，日志打实际窗口', async () => {
+  const seen = [];
+  const { deps, logs } = makeDeps({
+    ctx: {
+      get: () => ({ readSurface: () => Promise.resolve({ events: [{ role: 'user', text: 'a' }] }) }),
+      timer: { timeout: () => () => {} },
+    },
+    extractHistoryConclusions: () => ['结论'],
+    splitHistoryRounds: (events, first, last) => { seen.push([first, last]); return ['line']; },
+  });
+  const runner = createCorrectionRunner(deps);
+  assert.equal(await runner.fetchCorrectionHistory('s', { correction: { windowRounds: 3 } }), 'line');
+  assert.deepEqual(seen.at(-1), [1, 3], 'windowRounds=3 ⇒ 传 [1,3]');
+  assert.ok(logs.some((l) => l.includes('history rounds=1-3')), '日志须打实际窗口；实得 ' + JSON.stringify(logs));
+
+  await runner.fetchCorrectionHistory('s', {});
+  assert.deepEqual(seen.at(-1), [1, 1], '缺省 ⇒ [1,1]');
+  await runner.fetchCorrectionHistory('s');
+  assert.deepEqual(seen.at(-1), [1, 1], '无 config ⇒ [1,1]');
+  await runner.fetchCorrectionHistory('s', { correction: { windowRounds: 9 } });
+  assert.deepEqual(seen.at(-1), [1, 1], '非法 ⇒ [1,1]');
+});
+
+test('HCR-08 ⭐runCorrection 把 args.config 传给历史读取（接线不丢参）', async () => {
+  const seen = [];
+  const { deps } = makeDeps({
+    ctx: {
+      get: () => ({ readSurface: () => Promise.resolve({ events: [] }) }),
+      timer: { timeout: () => () => {} },
+    },
+    splitHistoryRounds: (events, first, last) => { seen.push([first, last]); return []; },
+    llm: {
+      stream: () => ({
+        [Symbol.asyncIterator]() {
+          let i = 0;
+          return { async next() { return { done: true }; } };
+        },
+      }),
+    },
+  });
+  const runner = createCorrectionRunner(deps);
+  await runner.runCorrection({ sessionId: 's', text: '原文', config: { correction: { enabled: true, windowRounds: 2 }, fallback: [{ provider: 'p', model: 'm' }] } });
+  assert.deepEqual(seen.at(-1), [1, 2], 'runCorrection 须把 config 一路传到 splitHistoryRounds');
 });

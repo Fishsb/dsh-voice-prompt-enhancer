@@ -67,6 +67,8 @@ function createClientApp(deps) {
     subscribeVoiceConfig: voiceApi.subscribeVoiceConfig, saveVoiceCfg: voiceApi.saveVoiceCfg,
     syncVoiceFromHost: voiceApi.syncVoiceFromHost, vadSilenceMsOf: voiceApi.vadSilenceMsOf,
     normalizeVadSilenceMs: voiceApi.normalizeVadSilenceMs, rpcMethods: contracts.RPC_METHODS, CollapsibleSection, officialVoiceBridge,
+    // UD-0052（2026-11-08）：自动增强档位候选 = 契约模式五值（名称走既有 `modeLabel*` 键）。
+    MODE_VALUES: shared.MODE_VALUES,
     voiceHotkeyDisplay: shared.voiceHotkeyDisplay,
     fillerSnapshot: shared.fillerSnapshot, subscribeFiller: shared.subscribeFiller,
     correctionSnapshot: correction.correctionSnapshot, subscribeCorrection: correction.subscribeCorrection,

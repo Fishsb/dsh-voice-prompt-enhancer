@@ -343,11 +343,15 @@ test('CHG143-S2 两侧白名单**同形**：host sanitizeVoiceCfg ↔ client mer
   const host = fs.readFileSync(path.join(ROOT, 'lib/asr.cjs'), 'utf8');
   const client = fs.readFileSync(path.join(ROOT, 'src/client/domains/voice/state.cjs'), 'utf8');
   // host 侧（lib/asr.cjs 是普通 cjs 源文本）
-  assert.ok(/correction:\s*\{\s*enabled:\s*\(cfg && cfg\.correction && cfg\.correction\.enabled === true\) \? true : false \}/.test(host),
-    'host sanitizeVoiceCfg 须有同形 correction 白名单');
+  // 2026-11-08（语音四件收口批）：O4 新增 `windowRounds` 后 correction 白名单变成**多行形态**
+  //   （`correction: {` 换行 → `enabled: ...` → `windowRounds: ...`），旧正则要求 `enabled` 紧邻 `{`
+  //   且以 `}` 收尾 ⇒ 不再命中。⇒ 正则放宽**空白**（`\s*` 覆盖换行）并把 `windowRounds` 一并纳入，
+  //   判据强度**只升不降**：现在逐字锁两个键，而不是一个。
+  assert.ok(/correction:\s*\{\s*enabled:\s*\(cfg && cfg\.correction && cfg\.correction\.enabled === true\) \? true : false,\s*windowRounds:\s*normalizeCorrectionWindowRounds\(cfg && cfg\.correction \? cfg\.correction\.windowRounds : undefined\),\s*\}/.test(host),
+    'host sanitizeVoiceCfg 须有同形 correction 白名单（enabled + windowRounds 两键）');
   // client 侧
-  assert.ok(/correction:\s*\{\s*enabled:\s*\(v && v\.correction && v\.correction\.enabled === true\) \? true : false \}/.test(client),
-    'client mergeVoice 须有同形 correction 白名单');
+  assert.ok(/correction:\s*\{\s*enabled:\s*\(v && v\.correction && v\.correction\.enabled === true\) \? true : false,\s*windowRounds:\s*normalizeCorrectionWindowRounds\(v && v\.correction \? v\.correction\.windowRounds : undefined\),\s*\}/.test(client),
+    'client mergeVoice 须有同形 correction 白名单（enabled + windowRounds 两键）');
   // ⚠ 漏改一侧 ⇒ 开关形同虚设（M-3）：两侧都必须命中
   assert.ok(host.includes('correction') && client.includes('correction'), '两侧都须含 correction（漏一侧即 M-3 缺陷）');
 });

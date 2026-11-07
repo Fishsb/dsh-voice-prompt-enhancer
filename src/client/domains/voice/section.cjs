@@ -34,6 +34,13 @@ function createVoiceSection(deps) {
 // （「未观测到官方采集（自动停未生效）」）——不是只写日志。
 // 2026-10-17：把「上次失败」的时刻折算成可读时距（给诊断文案用）。
 //   ⚠ 只读、纯函数；无时刻（0/非法）⇒ 返回''，由调用方退化为不带时距的写法。
+// UD-0052（2026-11-08 · 语音四件收口批）：档位候选 = 契约 `MODE_VALUES`（五项）。
+//   ⚠ 名称一律走既有 `modeLabel*` i18n 键（⛔ 不新写模式名）。
+//   ⚠ 用 `typeof` 守卫而非直接引用依赖名：本文件被 `factoryBody()` 求值时**依赖声明段被裁掉**
+//     （边界 = `function ` 之后第一个 `//`），故依赖标识符只在装配层可见；未注入时退回契约同值字面量。
+const ENHANCE_MODE_VALUES = typeof MODE_VALUES !== 'undefined' && Array.isArray(MODE_VALUES) && MODE_VALUES.length > 0
+  ? MODE_VALUES
+  : ['base', 'lite', 'standard', 'smart', 'publish'];
 function ovbSinceLabel(at) {
   if (!at || typeof at !== 'number') return '';
   var d = Date.now() - at;
@@ -493,6 +500,45 @@ function VoiceSection(props) {
     ),
   );
 
+  // ── UD-0052 / O4（2026-11-08 · 语音四件收口批）：两个**新档位**控件 ──
+  //   ① 自动增强档位：空串 = 跟随全局 `config.mode`（默认行为，⛔ 不得改）；其余为五模式之一。
+  //      ⚠ 只影响**语音自动增强**这条路径；手动 ✨ 增强不受影响（见 helpers.enhance 的第 5 参）。
+  //   ② 纠错参考窗口轮数：1–3，默认 1（= 既有 `[1,1]` 行为）。
+  //   ⚠ 两者都走 `saveVoiceCfg`；`patch` 必须**带全同段字段**（`saveVoiceCfg` 会整体替换该段）。
+  const autoEnhanceModeNow = typeof v.autoEnhanceMode === 'string' ? v.autoEnhanceMode : '';
+  const windowRoundsNow = (v.correction && Number.isInteger(v.correction.windowRounds)) ? v.correction.windowRounds : 1;
+  const tuningRow = React.createElement('div', { className: 'dsh-plg-row dsh-plg-row-duo' },
+    React.createElement('div', { className: 'dsh-plg-field' },
+      React.createElement('label', { className: 'dsh-plg-label', htmlFor: 'dsh-vi-auto-enhance-mode' }, t('voiceAutoEnhanceModeLabel')),
+      React.createElement('select', {
+        id: 'dsh-vi-auto-enhance-mode',
+        className: 'dsh-plg-select',
+        title: t('voiceAutoEnhanceModeTip'),
+        'aria-label': t('voiceAutoEnhanceModeLabel'),
+        value: autoEnhanceModeNow,
+        onChange: (e) => { saveVoiceCfg({ autoEnhanceMode: e.target.value }); },
+      },
+        React.createElement('option', { key: 'follow', value: '' }, t('voiceAutoEnhanceModeFollow')),
+        ENHANCE_MODE_VALUES.map((m) => React.createElement('option', { key: m, value: m },
+          t('modeLabel' + (m.charAt(0).toUpperCase() + m.slice(1))))),
+      ),
+    ),
+    React.createElement('div', { className: 'dsh-plg-field' },
+      React.createElement('label', { className: 'dsh-plg-label', htmlFor: 'dsh-vi-correction-window' }, t('voiceCorrectionWindowLabel')),
+      React.createElement('select', {
+        id: 'dsh-vi-correction-window',
+        className: 'dsh-plg-select',
+        title: t('voiceCorrectionWindowTip'),
+        'aria-label': t('voiceCorrectionWindowLabel'),
+        value: String(windowRoundsNow),
+        onChange: (e) => { saveVoiceCfg({ correction: { enabled: correctionOn, windowRounds: Number(e.target.value) } }); },
+      },
+        [1, 2, 3].map((n) => React.createElement('option', { key: String(n), value: String(n) },
+          String(n) + ' ' + t('voiceCorrectionWindowUnit'))),
+      ),
+    ),
+  );
+
   // P2-补做（2026-10-13 · PROJECT §7.4）：静音判定时长可配（**0–5** 档，默认 2 秒）。
   // 2026-10-17（用户点名布局批）：**静音监测开关从第一行搬到本行**，并**覆盖掉**原「静音时长」
   //   标签与下拉框 ⇒ 本行 = 开关组件 + 滑块 + 读数（三件）。
@@ -542,6 +588,7 @@ function VoiceSection(props) {
 
   const body = React.createElement('div', { className: 'dsh-vi-section' },
     row1,
+    tuningRow,
     silenceRow,
     // P1-a：识别引擎/模型由官方管理 —— 此处只报就绪态（不再提供引擎/模型选择）
     React.createElement('div', { className: 'dsh-plg-row' },

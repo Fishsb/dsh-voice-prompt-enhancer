@@ -15,11 +15,15 @@ test('CI18N-01 旧 i18n chunk 退役，普通模块与测试单一入口在位',
   assert.equal(typeof EN, 'object');
 });
 
-test('CI18N-02 ZH/EN 顶层键集完全相等且保持 299 键', () => {
+test('CI18N-02 ZH/EN 顶层键集完全相等且保持 305 键', () => {
+  // 2026-11-08（语音四件收口批）：299 → **305**（+6 键，逐项可归因：`voiceAutoEnhanceModeLabel` /
+  //   `voiceAutoEnhanceModeTip` / `voiceAutoEnhanceModeFollow` / `voiceCorrectionWindowLabel` /
+  //   `voiceCorrectionWindowTip` / `voiceCorrectionWindowUnit`；中英各加 6，两侧仍相等）。
+  //   ⚠ 本断言锁的是「两侧键集相等 + 数量不被静默改动」，数量须随**合法新增**同步；判据本身（两侧 deepEqual）未改。
   const zhKeys = Object.keys(ZH).sort();
   const enKeys = Object.keys(EN).sort();
-  assert.equal(zhKeys.length, 299);
-  assert.equal(enKeys.length, 299);
+  assert.equal(zhKeys.length, 305);
+  assert.equal(enKeys.length, 305);
   assert.deepEqual(zhKeys, enKeys);
 });
 

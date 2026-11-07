@@ -12,6 +12,14 @@
 const { resolveCorrectionSwitch, CORRECTION_DISABLED_CODE, CORRECTION_ENABLED_REASON } = require('./switch.cjs');
 
 const CORRECTION_WINDOW = [1, 1];
+
+// 纠错参考窗口：默认 [1,1]（最近 1 轮）。可经 voice.correction.windowRounds 配置为 1–3 轮。
+// 非法/缺省 ⇒ 回落默认；只改「读多少轮」，⛔ 不改 UD-0051「必须有会话参考」这条。
+function resolveCorrectionWindow(cfg) {
+  const n = cfg && cfg.correction && cfg.correction.windowRounds;
+  if (!Number.isInteger(n) || n < 1 || n > 3) return CORRECTION_WINDOW;
+  return [1, n];
+}
 const CORRECTION_TIMEOUT_MS = 30000;
 const CORRECTION_MAX_TOKENS = 4000;
 const CORRECTION_OUTPUT_LIMIT = 16000;
@@ -33,7 +41,7 @@ function createCorrectionRunner(deps) {
   const correctionPrompt = d.correctionPrompt;
   const historyTimeoutMs = d.historyTimeoutMs;
 
-  async function fetchCorrectionHistory(sessionId) {
+  async function fetchCorrectionHistory(sessionId, config) {
     const sq = ctx && typeof ctx.get === 'function' ? ctx.get('sessionQuery') : null;
     if (!sq || typeof sq.readSurface !== 'function') {
       hlog('[correction] history skipped no-readSurface');
@@ -44,9 +52,10 @@ function createCorrectionRunner(deps) {
       const surface = await waitAbort.race(sq.readSurface(sessionId));
       if (waitAbort.timedOut()) { hlog('[correction] history timeout'); return ''; }
       const events = extractHistoryConclusions(surface && surface.events);
-      const lines = splitHistoryRounds(events, CORRECTION_WINDOW[0], CORRECTION_WINDOW[1]);
+      const win = resolveCorrectionWindow(config);
+      const lines = splitHistoryRounds(events, win[0], win[1]);
       const text = lines.join('\n');
-      hlog('[correction] history rounds=' + CORRECTION_WINDOW[0] + '-' + CORRECTION_WINDOW[1] + ' events=' + events.length + ' chars=' + text.length);
+      hlog('[correction] history rounds=' + win[0] + '-' + win[1] + ' events=' + events.length + ' chars=' + text.length);
       return text;
     } catch (e) {
       hlog('[correction] history failed', e && e.message ? e.message : e);
@@ -80,7 +89,7 @@ function createCorrectionRunner(deps) {
     }
     const chain = buildTryChain(cfg.fallback);
     if (chain.length === 0) return { ok: false, code: 'NO_MODEL', message: friendlyMessage({ code: 'NO_MODEL' }) };
-    const historyText = await fetchCorrectionHistory(sessionId);
+    const historyText = await fetchCorrectionHistory(sessionId, args && args.config);
     const system = correctionPrompt.replace('{history}', historyText);
     let lastFailure = null;
     for (let i = 0; i < chain.length; i++) {
@@ -152,6 +161,7 @@ function createCorrectionRunner(deps) {
 
 module.exports = {
   CORRECTION_WINDOW,
+  resolveCorrectionWindow,
   CORRECTION_TIMEOUT_MS,
   CORRECTION_MAX_TOKENS,
   CORRECTION_OUTPUT_LIMIT,

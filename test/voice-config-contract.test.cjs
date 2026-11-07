@@ -73,3 +73,69 @@ test('VCONF-07 发布物自包含：运行时模块不得引用 src/，npm pack 
   // 发布白名单只含 lib/ ⇒ lib/voice-config.cjs 必然随包；这条用真实清单锁定，不依赖 npm 可执行文件路径。
   assert.ok(pkg.files.some((entry) => entry === 'lib' || entry.startsWith('lib/')), 'lib/voice-config.cjs 必须落在发布白名单内');
 });
+
+// ─────────── O4 / UD-0052（2026-11-08 · 语音四件收口批）：两份白名单同批同形 ───────────
+// 病历（`CHG-115` `M-3`）：host `sanitizeVoiceCfg` 与 client `mergeVoice` 是**两份独立白名单**，
+//   只改一侧 ⇒ 该字段在保存链路被静默剥掉（用户改了不生效，且没有任何提示）。
+//   本锁对同一输入逐键比对 `correction` 段与 `autoEnhanceMode`，任一侧漏改即红。
+const { sanitizeVoiceCfg } = require('../lib/asr.cjs');
+const { createVoiceState } = require('../src/client/domains/voice/state.cjs');
+const { RPC_METHODS } = require('../src/shared/contracts/rpc.cjs');
+const { normalizeAutoEnhanceMode, normalizeCorrectionWindowRounds } = require('../src/shared/contracts/voice-config.cjs');
+
+function clientMergeVoice() {
+  const api = createVoiceState({
+    host: { call: () => Promise.resolve({ ok: false }) },
+    storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    defaults: VOICE_CONFIG_DEFAULTS,
+    rpcMethods: RPC_METHODS,
+    normalizeAutoEnhanceMode,
+    normalizeCorrectionWindowRounds,
+    autoSync: false,
+  });
+  return api.mergeVoice;
+}
+
+test('VCONF-08 ⭐O4 两份白名单同形：correction 段逐键相等（含 windowRounds 归一）', () => {
+  const mergeVoice = clientMergeVoice();
+  const inputs = [
+    {},
+    { correction: { enabled: true } },
+    { correction: { enabled: true, windowRounds: 1 } },
+    { correction: { enabled: false, windowRounds: 2 } },
+    { correction: { enabled: true, windowRounds: 3 } },
+    { correction: { enabled: true, windowRounds: 0 } },
+    { correction: { enabled: true, windowRounds: 9 } },
+    { correction: { enabled: true, windowRounds: null } },
+    { correction: { enabled: 'yes', windowRounds: 2.5 } },
+    { correction: null },
+  ];
+  for (const input of inputs) {
+    const host = sanitizeVoiceCfg(input).correction;
+    const client = mergeVoice(input).correction;
+    assert.deepEqual(client, host, 'correction 段必须逐键相等（M-3）；输入 ' + JSON.stringify(input));
+    assert.deepEqual(Object.keys(client).sort(), ['enabled', 'windowRounds'], 'correction 键集固定为 enabled + windowRounds');
+  }
+});
+
+test('VCONF-09 ⭐UD-0052 两份白名单同形：autoEnhanceMode 归一逐值相等', () => {
+  const mergeVoice = clientMergeVoice();
+  const inputs = [undefined, null, '', 'lite', 'smart', 'publish', 'base', 'standard', 'foo', 42, 'MEMORY'];
+  for (const value of inputs) {
+    const host = sanitizeVoiceCfg({ autoEnhanceMode: value }).autoEnhanceMode;
+    const client = mergeVoice({ autoEnhanceMode: value }).autoEnhanceMode;
+    assert.equal(client, host, 'autoEnhanceMode 必须两侧同值；输入 ' + JSON.stringify(value));
+  }
+  // 值域 = 五模式 + 空串；其余一律落空串（= 跟随全局，默认行为）
+  assert.equal(sanitizeVoiceCfg({ autoEnhanceMode: 'lite' }).autoEnhanceMode, 'lite');
+  for (const bad of ['foo', 42, null, undefined, 'MEMORY', 'LITE']) {
+    assert.equal(sanitizeVoiceCfg({ autoEnhanceMode: bad }).autoEnhanceMode, '', '非法值须落空串：' + String(bad));
+  }
+});
+
+test('VCONF-10 默认值：autoEnhanceMode 空串 + correction.windowRounds 1（不改既有默认行为）', () => {
+  assert.equal(VOICE_CONFIG_DEFAULTS.autoEnhanceMode, '');
+  assert.equal(VOICE_CONFIG_DEFAULTS.correction.windowRounds, 1);
+  assert.equal(VOICE_CONFIG_DEFAULTS.correction.enabled, false);
+  assert.ok(VOICE_CONFIG_KEYS.includes('autoEnhanceMode'), 'VOICE_CONFIG_KEYS 须含 autoEnhanceMode');
+});
