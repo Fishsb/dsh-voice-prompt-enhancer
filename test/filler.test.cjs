@@ -55,10 +55,12 @@ test('FILLER-53 ⭐英文口癖·大小写不敏感且不吃掉后续实义', ()
 });
 
 test('FILLER-54 ⭐中英混排：中英口癖都清且不留连续空格（实测口径）', () => {
-  // ⚠ 实测：整句三个 token（嗯 / um / 那个）全部满足「孤立」判据 ⇒ 全清 ⇒ 空串。
-  //   任务书原假设「um 夹在中文之间被判词内」**不成立**（um 两侧是空格=边界），
-  //   已如实记入 REPORT，未改判据迁就实现。
-  assert.equal(strip('嗯 um 那个'), '');
+  // ⚠ CHG-344（2026-11-08）订正：整句三个 token（嗯 / um / 那个）全部满足「孤立」判据 ⇒ 旧行为全清成**空串**。
+  //   空串对用户是可见损失 ⇒ 加「不许把话说没」兜底：清理结果为空/只剩空白时**原样返回原文**。
+  //   ⚠ 判据本体（词表 / 白名单 / 儿化音 / 位置保护）一字未改，只加这一条兜底。
+  const empty = F.stripFillers('嗯 um 那个');
+  assert.equal(empty.text, '嗯 um 那个', '整句只剩口癖 ⇒ 放弃清理、原样返回（不得清成空串）');
+  assert.equal(empty.changed, false, '放弃清理 ⇒ changed 必须为 false');
   // 仍有实义时：中英口癖都要清，且不得留下连续空格
   const out = strip('嗯 um 我想想');
   assert.equal(out, '我想想');
@@ -285,4 +287,39 @@ test('FILLER-V03 负控·正常句在两种变异下仍不得被改坏', () => {
       assert.equal(M.stripFillers(s).text, s, '负控(' + kind + ')：正常句不得被改坏');
     }
   }
+});
+
+// ─────────── CHG-344（2026-11-08 · 作用域修复）：只清本次识别新增的那一段 ───────────
+// 病历：旧 `applyFillerToDraft()` 读**全量草稿**，注释却写「只在前缀增量上应用」⇒
+//   用户早先手打的「然后」「其实」也会被过词表（对用户是可见损失，且用户从未要求清手打字）。
+// 判据：给了 `base`（= 会话开始时的草稿基线）⇒ 只清 `base` 之后的增量；
+//   `text` 不以 `base` 开头（作用域不清）⇒ 跳过 + 记 skipped（`scope-unclear`），⛔ 不猜、⛔ 不清全量。
+test('FILLER-56 ⭐作用域：base 之后的增量被清、base 之前的用户手打字逐字不变', () => {
+  const base = '用户手打的然后其实';
+  const cur = base + '嗯 我想想';
+  const r = F.runFiller(cur, true, base);
+  assert.equal(r.changed, true, '增量里的「嗯」应被清掉');
+  assert.equal(r.text, base + '我想想', '只清增量，拼回原文前缀');
+  assert.equal(r.text.slice(0, base.length), base, 'base 之前的手打字必须逐字不变（「然后」「其实」不得被动）');
+});
+
+test('FILLER-57 ⭐作用域不清（cur 不以 base 开头）⇒ 不清理且记 skipped(scope-unclear)', () => {
+  const base = '用户手打的然后其实';
+  const cur = '别的内容' + base;                     // 草稿被别处改过，前缀对不上
+  const before = F.fillerSnapshot();
+  const r = F.runFiller(cur, true, base);
+  assert.equal(r.changed, false, '作用域不清 ⇒ 不得改动文本');
+  assert.equal(r.text, cur, '原样返回，⛔ 不许退化成清全量');
+  assert.equal(r.skipped, true);
+  assert.equal(r.reason, 'scope-unclear');
+  const after = F.fillerSnapshot();
+  assert.equal(after.lastSkipReason, 'scope-unclear', '跳过原因必须可见（不得静默）');
+  assert.equal(after.skipped, before.skipped + 1, '跳过次数 +1');
+});
+
+test('FILLER-58 无 base 时保持全量语义（既有调用方回归）', () => {
+  assert.equal(F.runFiller('嗯 我想想', true).text, '我想想');
+  const off = F.runFiller('嗯 我想想', false);
+  assert.equal(off.text, '嗯 我想想');
+  assert.equal(off.reason, 'disabled');
 });

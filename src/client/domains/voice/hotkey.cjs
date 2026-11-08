@@ -319,7 +319,7 @@ function VoiceHotkeyHost(props) {
     //   · 开关：`voice.filler.enabled`（默认开）；**关闭即整体跳过**（并记一次 skipped ⇒ 可见）。
     //   · 只做删除（不改写/不新增/不改语义/不纠错）；误删防护在 `filler.js` 内（白名单 + 位置保护）。
     //   · 失败/异常一律**不改草稿**（保守：宁可不清理，也不弄坏用户原文）。
-    const applyFillerToDraft = () => {
+    const applyFillerToDraft = (base) => {
       try {
         if (typeof stripFillers !== 'function' || typeof runFiller !== 'function') return;
         const cur = draftRef.current;
@@ -327,10 +327,14 @@ function VoiceHotkeyHost(props) {
         const cfg = voiceCfgState.value && voiceCfgState.value.filler ? voiceCfgState.value.filler : {};
         // 目标模式第二批：清理开关也由同一份后处理计划取真值（与 planning 侧同口径）。
         const fillerAllowed = wantPostprocessStep('filler') || (!planVoiceSteps && cfg.enabled !== false);
-        const r = runFiller(cur, fillerAllowed);
+        // ⚠ CHG-344（2026-11-08 · 作用域修复）：**只清本次识别新增的那一段**。
+        //   基线取 `check()` 里已有的 `w.draft`（会话开始时的草稿），⛔ 不新造状态。
+        //   作用域不清（`cur` 不以基线开头）⇒ 由 `runFiller` 记 skipped（`scope-unclear`）并跳过，
+        //   ⛔ 不许猜、⛔ 不许退化成清全量（那会把用户早先手打的「然后」「其实」也过词表）。
+        const scopeBase = (typeof base === 'string') ? base : null;
+        if (scopeBase === null) return;
+        const r = runFiller(cur, fillerAllowed, scopeBase);
         if (!r || r.changed !== true || typeof r.text !== 'string' || r.text === '') return;
-        // ⚠ 只在前缀增量上应用（官方刚写入的那段）；避免把用户早先手写的内容一并改动。
-        //   简化且安全的判据：仅当**清理后文本**是原文的子序列式删减（长度更短且逐段包含）时才写回。
         if (r.text.length >= cur.length) return;
         if (inputActions && typeof inputActions.setDraft === 'function') {
           inputActions.setDraft(r.text);
@@ -350,7 +354,8 @@ function VoiceHotkeyHost(props) {
         if (w.stop) w.stop();
         // ⚠ CHG-117（规整改造）：官方写回**落地后**先跑「清口水词」（本地纯规则）。
         //   时机：此处正是"官方把识别文本写进草稿"的判定点 ⇒ 清理作用于**新写入的那段**。
-        applyFillerToDraft();
+        //   CHG-344：把 `w.draft`（本会话开始时的草稿基线）当作用域基线传下去。
+        applyFillerToDraft(w.draft);
         // CHG-143：识别完成 → （开关组合）先纠错、再按需增强
         runCorrectionThenMaybeEnhance();
         return;

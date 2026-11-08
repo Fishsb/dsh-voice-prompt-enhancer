@@ -28,6 +28,8 @@ const voiceModules = require('./helpers/client-voice-modules.cjs');
 const { voiceStateChunkWithDefaults } = require('./helpers/voice-state-chunk.cjs');
 const { i18nSource } = require('./helpers/client-i18n.cjs');
 const plan = require('../src/shared/voice/postprocess-plan.cjs');
+// CHG-344（2026-11-08）：作用域用例要跑**真实**清理器（词表与判据是事实源，桩会掩盖缺陷）。
+const filler = require('../src/client/domains/voice/filler.cjs');
 
 // §7.4 起：official-bridge 依赖 state.js 的单一事实源（vadSilenceMsOf / vadRequiredQuiet / voiceCfgState）。
 // 测试注入**真实的 state.js**（而非桩），以保证「两条入口共用同一值」在测试里也是同一份实现。
@@ -757,7 +759,8 @@ function buildHotkeyHost(env, bridge, opts) {
   bridge.setTimer(timerSvcLocal);
   // F-18：热键监听器只在「已启用且有组合键」时注册 ⇒ 需要驱动真实处理器的用例须传 hotkey:true
   const hkCombo = o.hotkeyCombo || 'Backquote';
-  const voiceCfgState = { value: { autoEnhance: o.autoEnhance === true, vad: { enabled: true }, hotkey: { enabled: o.hotkey === true, combo: o.hotkey === true ? hkCombo : '' }, refine: {} }, listeners: new Set(), synced: true };
+  // CHG-344：`filler:true` 才打开清口水词（默认不开 ⇒ 既有 13 处调用行为逐字不变）。
+  const voiceCfgState = { value: Object.assign({ autoEnhance: o.autoEnhance === true, vad: { enabled: true }, hotkey: { enabled: o.hotkey === true, combo: o.hotkey === true ? hkCombo : '' }, refine: {} }, o.filler === true ? { filler: { enabled: true } } : {}), listeners: new Set(), synced: true };
   const enhanceCalls = [];
   // F-18：持久 store 桩 —— 组件通过 storeFor(sessionId) 写 `error` 作为「失败可见」出口，
   //   旧桩每次返回新对象 ⇒ 写进去看不见。改为稳定对象，使该出口可被断言。
@@ -769,7 +772,7 @@ function buildHotkeyHost(env, bridge, opts) {
     'isVoiceRecording', 'insertVoiceText', 'notify', 'enhance', 'timerSvc', 'officialVoiceBridge', 'makeT', 'ZH',
     'MarqueeSelect', 'CollapsibleSection', 'setInterval', 'clearInterval', 'setTimeout', 'navigator', 'window',
     'configState', 'markCorrectionSkipped', 'markCorrectionStarted', 'markCorrectionSettled',
-    'markCorrectionFailed', 'notifyCorrection', 'correctionState', 'planVoicePostprocess', 'voicePostprocessHas',
+    'markCorrectionFailed', 'notifyCorrection', 'correctionState', 'planVoicePostprocess', 'voicePostprocessHas', 'stripFillers', 'runFiller',
     src + '\n;return { VoiceHotkeyHost };'
   );
   const api = factory(
@@ -784,9 +787,11 @@ function buildHotkeyHost(env, bridge, opts) {
     setInterval, clearInterval, setTimeout, env.navigator, env.window,
     { value: {} }, () => {}, () => {}, () => {}, () => {}, () => {},
     { runs: 0, skipped: 0, ok: 0, changed: 0, failed: 0, lastAt: 0, lastCode: '', lastSkipReason: '' },
-    plan.planVoicePostprocess, plan.voicePostprocessHas
+    plan.planVoicePostprocess, plan.voicePostprocessHas,
+    filler.stripFillers, filler.runFiller
   );
-  const props = { sessionId: o.sessionId || 'sess-x', inputActions: { setDraft() {} }, input: { draft: o.draft0 || '' } };
+  const setDraftCalls = [];
+  const props = { sessionId: o.sessionId || 'sess-x', inputActions: { setDraft(t) { setDraftCalls.push(t); } }, input: { draft: o.draft0 || '' } };
   const render = (draft) => { if (draft !== undefined) props.input = { draft }; mini.begin(); api.VoiceHotkeyHost(props); mini.runEffects(); };
   // 驱动生产代码里的真实热键处理器（windows stub 记录的监听器）
   // ⚠ 必须显式给四个修饰键为 false：matchVoiceHotkey 用 `e.ctrlKey === hk.ctrl` 严格比较，
@@ -799,7 +804,7 @@ function buildHotkeyHost(env, bridge, opts) {
   const keyup = () => env.window._fire('keyup', KEYDOWN());
   // 跑所有未清除的 timeout 步进（模拟时钟推进）
   const runTimeouts = (max) => { let n = 0; for (const r of timerRegs) { if (!r.cleared && r.kind === 'timeout') { r.cleared = true; r.fn(); n += 1; if (max && n >= max) break; } } return n; };
-  return { render, props, enhanceCalls, timerRegs, voiceCfgState, mini, keydown, keyup, runTimeouts, store: storeStub };
+  return { render, props, enhanceCalls, timerRegs, voiceCfgState, mini, keydown, keyup, runTimeouts, store: storeStub, setDraftCalls };
 }
 
 test('OVB-A01 官方路径·自动增强：会话结束 + 写回落地 ⇒ autoEnhance 触发增强（有限轮询）', () => {
@@ -885,6 +890,57 @@ test('OVB-A05 官方路径·自动增强：跨会话基线不串（第二会话�
   env.document._attr = null; mo.cb();
   for (const r of host.timerRegs) { for (let i = 0; i < 60 && !r.cleared; i++) r.fn(); }
   assert.equal(host.enhanceCalls.length, 1, '第二会话无写回 ⇒ 不得误触发（基线须随会话重置）');
+});
+
+// ───────── CHG-344（2026-11-08）：清口水词的**作用域**（只清本次识别新增的那一段）─────────
+// 病历：旧 `applyFillerToDraft()` 读**全量草稿**（`draftRef.current`），注释却写「只在前缀增量上应用」
+//   ⇒ 用户早先手打的「然后」「其实」也会被过词表（可见损失，且用户从未要求清手打字）。
+test('OVB-F01 ⭐作用域：只清 base 之后的新增段，base 之前的用户手打字逐字不变', () => {
+  const env = makeFakeEnv({ recordingPhase: true });
+  const bridge = loadBridge(env);
+  bridge.install();
+  const base = '用户手打的然后其实';
+  const host = buildHotkeyHost(env, bridge, { autoEnhance: false, filler: true, sessionId: 'sess-f1', draft0: base });
+  host.render(base);
+  const mo = env.observerInstances[env.observerInstances.length - 1];
+  env.document._attr = 'recording'; mo.cb();        // 会话开始 ⇒ 记基线 = base
+  env.document._attr = null; mo.cb();               // 收口 ⇒ 武装等待
+  host.render(base + '嗯 我想想');                    // 官方写回落地（增量带口癖）
+  for (const r of host.timerRegs) { if (!r.cleared) r.fn(); }
+  const last = host.setDraftCalls[host.setDraftCalls.length - 1];
+  assert.equal(last, base + '我想想', '只清增量：base 逐字保留，增量里的「嗯」被清');
+  assert.ok(last.slice(0, base.length) === base, 'base 之前的手打字（然后/其实）必须逐字不变');
+});
+
+test('OVB-F02 ⭐作用域不清（cur 不以 base 开头）⇒ 不清理、不写回，并记 skipped(scope-unclear)', () => {
+  const env = makeFakeEnv({ recordingPhase: true });
+  const bridge = loadBridge(env);
+  bridge.install();
+  const base = '用户手打的然后其实';
+  const host = buildHotkeyHost(env, bridge, { autoEnhance: false, filler: true, sessionId: 'sess-f2', draft0: base });
+  host.render(base);
+  const mo = env.observerInstances[env.observerInstances.length - 1];
+  env.document._attr = 'recording'; mo.cb();
+  env.document._attr = null; mo.cb();
+  host.render('嗯 完全不同的内容');                   // 前缀对不上（草稿被别处改过）
+  for (const r of host.timerRegs) { if (!r.cleared) r.fn(); }
+  assert.equal(host.setDraftCalls.length, 0, '作用域不清 ⇒ ⛔ 不许退化成清全量、不得写回');
+  assert.equal(filler.fillerSnapshot().lastSkipReason, 'scope-unclear', '跳过原因必须可见');
+});
+
+test('OVB-F03 负控：清理关掉时既有链路行为不变（不写回）', () => {
+  const env = makeFakeEnv({ recordingPhase: true });
+  const bridge = loadBridge(env);
+  bridge.install();
+  const base = '用户手打的然后其实';
+  const host = buildHotkeyHost(env, bridge, { autoEnhance: false, sessionId: 'sess-f3', draft0: base });
+  host.render(base);
+  const mo = env.observerInstances[env.observerInstances.length - 1];
+  env.document._attr = 'recording'; mo.cb();
+  env.document._attr = null; mo.cb();
+  host.render(base + '嗯 我想想');
+  for (const r of host.timerRegs) { if (!r.cleared) r.fn(); }
+  assert.equal(host.setDraftCalls.length, 0, 'filler 关 ⇒ 不得改写草稿');
 });
 
 // ───────────────────────────── 接线契约（防"注释有、代码无"） ─────────────────────────────
@@ -1379,7 +1435,7 @@ test('OVB-R04 F-18 变异自证：退回「只写标记、无消费」⇒ OVB-R0
     'isVoiceRecording', 'insertVoiceText', 'notify', 'enhance', 'timerSvc', 'officialVoiceBridge', 'makeT', 'ZH',
     'MarqueeSelect', 'CollapsibleSection', 'setInterval', 'clearInterval', 'setTimeout', 'navigator', 'window',
     'configState', 'markCorrectionSkipped', 'markCorrectionStarted', 'markCorrectionSettled',
-    'markCorrectionFailed', 'notifyCorrection', 'correctionState', 'planVoicePostprocess', 'voicePostprocessHas',
+    'markCorrectionFailed', 'notifyCorrection', 'correctionState', 'planVoicePostprocess', 'voicePostprocessHas', 'stripFillers', 'runFiller',
     mutated + '\n;return { VoiceHotkeyHost };'
   );
   const api = factory(
@@ -1392,7 +1448,8 @@ test('OVB-R04 F-18 变异自证：退回「只写标记、无消费」⇒ OVB-R0
     setInterval, clearInterval, setTimeout, env.navigator, env.window,
     { value: {} }, () => {}, () => {}, () => {}, () => {}, () => {},
     { runs: 0, skipped: 0, ok: 0, changed: 0, failed: 0, lastAt: 0, lastCode: '', lastSkipReason: '' },
-    plan.planVoicePostprocess, plan.voicePostprocessHas
+    plan.planVoicePostprocess, plan.voicePostprocessHas,
+    filler.stripFillers, filler.runFiller
   );
   const props = { sessionId: 'sess-r4', inputActions: { setDraft() {} }, input: { draft: '' } };
   mini.begin(); api.VoiceHotkeyHost(props); mini.runEffects();
@@ -2758,7 +2815,7 @@ test('OVB-POINT-V01 变异自证·正例必红：退回 statusRef 判据 ⇒ 点
     'isVoiceRecording', 'insertVoiceText', 'notify', 'enhance', 'timerSvc', 'officialVoiceBridge', 'makeT', 'ZH',
     'MarqueeSelect', 'CollapsibleSection', 'setInterval', 'clearInterval', 'setTimeout', 'navigator', 'window',
     'configState', 'markCorrectionSkipped', 'markCorrectionStarted', 'markCorrectionSettled',
-    'markCorrectionFailed', 'notifyCorrection', 'correctionState', 'planVoicePostprocess', 'voicePostprocessHas',
+    'markCorrectionFailed', 'notifyCorrection', 'correctionState', 'planVoicePostprocess', 'voicePostprocessHas', 'stripFillers', 'runFiller',
     src + '\n;return { VoiceHotkeyHost };'
   );
   const api = factory(
@@ -2771,7 +2828,8 @@ test('OVB-POINT-V01 变异自证·正例必红：退回 statusRef 判据 ⇒ 点
     setInterval, clearInterval, setTimeout, env.navigator, env.window,
     { value: {} }, () => {}, () => {}, () => {}, () => {}, () => {},
     { runs: 0, skipped: 0, ok: 0, changed: 0, failed: 0, lastAt: 0, lastCode: '', lastSkipReason: '' },
-    plan.planVoicePostprocess, plan.voicePostprocessHas
+    plan.planVoicePostprocess, plan.voicePostprocessHas,
+    filler.stripFillers, filler.runFiller
   );
   const props = { sessionId: 'sess-mut', inputActions: { setDraft() {} }, input: { draft: '' } };
   mini.begin(); api.VoiceHotkeyHost(props); mini.runEffects();
@@ -2917,7 +2975,7 @@ function buildMutatedHost(mutation, opts) {
     'isVoiceRecording', 'insertVoiceText', 'notify', 'enhance', 'timerSvc', 'officialVoiceBridge', 'makeT', 'ZH',
     'MarqueeSelect', 'CollapsibleSection', 'setInterval', 'clearInterval', 'setTimeout', 'navigator', 'window',
     'configState', 'markCorrectionSkipped', 'markCorrectionStarted', 'markCorrectionSettled',
-    'markCorrectionFailed', 'notifyCorrection', 'correctionState', 'planVoicePostprocess', 'voicePostprocessHas',
+    'markCorrectionFailed', 'notifyCorrection', 'correctionState', 'planVoicePostprocess', 'voicePostprocessHas', 'stripFillers', 'runFiller',
     src + '\n;return { VoiceHotkeyHost };'
   );
   const api = factory(
@@ -2930,7 +2988,8 @@ function buildMutatedHost(mutation, opts) {
     setInterval, clearInterval, setTimeout, env.navigator, env.window,
     { value: {} }, () => {}, () => {}, () => {}, () => {}, () => {},
     { runs: 0, skipped: 0, ok: 0, changed: 0, failed: 0, lastAt: 0, lastCode: '', lastSkipReason: '' },
-    plan.planVoicePostprocess, plan.voicePostprocessHas
+    plan.planVoicePostprocess, plan.voicePostprocessHas,
+    filler.stripFillers, filler.runFiller
   );
   // ⚠ 顺序与 buildHotkeyHost 完全一致：render() = begin() → 组件调用 → runEffects()
   //   （顺序错/缺 begin ⇒ effect 不注册 ⇒ 事件处理器缺席，实测踩到）

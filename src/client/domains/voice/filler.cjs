@@ -248,6 +248,10 @@ function stripFillers(input) {
   out = tidy(out);
   // ⚠ 兜底：清理器**只许做减法** —— 若出现任何新增字符，判为异常并**原样返回**（保守）
   if (out.length > input.length) return { text: input, changed: false, removed: [], count: 0 };
+  // ⚠ 兜底（2026-11-08）：清理结果为空串或只剩空白 ⇒ 判为**过度清理**，原样返回原文。
+  //   理由：把整句清成空串对用户是可见损失（实测 `嗯 um 那个` 三 token 全中判据）。
+  //   与上一条同类：清理器只许做减法，**不许把话说没**。不改词表、不改任何既有判据。
+  if (out.trim() === '') return { text: input, changed: false, removed: [], count: 0 };
   return { text: out, changed: out !== input, removed: removed, count: removed.length };
 }
 
@@ -265,13 +269,34 @@ function fillerSnapshot() {
     legacyCleaned: fillerState.legacyCleaned === true,
     legacyAt: fillerState.legacyAt || 0 };
 }
-/** 带可见性的执行入口：`enabled=false` ⇒ 记为**跳过**（可见），不静默。 */
-function runFiller(text, enabled) {
+/** 带可见性的执行入口：`enabled=false` ⇒ 记为**跳过**（可见），不静默。
+ *  CHG-344（2026-11-08 · 作用域）：第三参 `base` 是**本次识别开始时的草稿基线**。
+ *   给了 `base` ⇒ 只清 `base` 之后**本次新增**的那一段，`base` 之前用户手打的内容逐字不动。
+ *   `text` 不以 `base` 开头（作用域不清）⇒ **跳过并记 skipped（scope-unclear）**，不猜、不清全量。 */
+function runFiller(text, enabled, base) {
   if (enabled !== true) {
     fillerState.runs += 1; fillerState.skipped += 1;
     fillerState.lastSkipReason = 'disabled'; fillerState.lastAt = Date.now();
     notifyFiller();
     return { text: text, changed: false, removed: [], count: 0, skipped: true, reason: 'disabled' };
+  }
+  if (typeof base === 'string') {
+    if (typeof text !== 'string' || text.indexOf(base) !== 0) {
+      fillerState.runs += 1; fillerState.skipped += 1;
+      fillerState.lastSkipReason = 'scope-unclear'; fillerState.lastAt = Date.now();
+      notifyFiller();
+      return { text: text, changed: false, removed: [], count: 0, skipped: true, reason: 'scope-unclear' };
+    }
+    var tail = text.slice(base.length);
+    var rt = stripFillers(tail);
+    fillerState.runs += 1; fillerState.lastAt = Date.now();
+    if (rt.changed) { fillerState.cleaned += 1; fillerState.removedTotal += rt.count; fillerState.lastRemoved = rt.removed; fillerState.lastSkipReason = ''; }
+    notifyFiller();
+    // 增量首部的空白（分隔符）原样保留：清理只做减法，不得把「空格 + 词」粘成新词。
+    var lead = (tail.match(/^\s+/) || [''])[0];
+    var body = rt.text;
+    if (lead && body !== '' && body.indexOf(lead) !== 0) body = lead + body;
+    return { text: base + body, changed: rt.changed, removed: rt.removed, count: rt.count };
   }
   var r = stripFillers(text);
   fillerState.runs += 1; fillerState.lastAt = Date.now();
