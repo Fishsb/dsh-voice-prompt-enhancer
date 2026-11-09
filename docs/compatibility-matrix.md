@@ -35,7 +35,7 @@
 | `config/get` | client → host | 读取磁盘配置（$DSH_HOME/dsh-voice-prompt-enhancer.config.json；DSH Desktop 动态端口配置恢复） | 只读 |
 | `config/set` | client → host | 写入磁盘配置（原子写 tmp+rename，≤1MB） | 用户触发 |
 | `voice/status` | client → host | 语音引擎就绪态（**委托官方 `ctx.speechToText.snapshot()`**）+ 清口水词就绪态 | 只读 |
-| `voice/correct` | client → host | **语音输入纠错**（独立语音增值步 · `CHG-143`）：识别完成后对草稿做**字词层低争议订正**（可带**最近 1 轮显式会话参考**判语境）；**与自动增强并联**、由 `voice.correction.enabled` 开关控制 | 用户触发 |
+| `voice/correct` | client → host | **语音输入纠错**（独立语音增值步 · `CHG-143`）：识别完成后对草稿做**字词层低争议订正**（可带**最近 1~3 轮**显式会话参考判语境，默认 1 轮，配置键 `voice.correction.windowRounds`）；**与自动增强并联**、由 `voice.correction.enabled` 开关控制 | 用户触发 |
 
 > 注：`models/*` / `logs/*` / `template/*` / `enhance*` / `cancel` / `voice/correct` 共 **12** 条注册于 `plugin-host.js`（由 `lib/index.cjs` 读出 `BODY` 并桥接）；`config/*` / `voice/status` 共 **3** 条注册于 **host 半部 `lib/` 侧的真 CommonJS 模块**——`config/*` 在 `lib/rpc-config.cjs`、`voice/status` 在 `lib/rpc-voice.cjs`（P2-3 拆分批起；`lib/index.cjs` 现为**薄装配入口**，自身不注册 RPC）。⚠ `CHG-143` 起 `voice/correct` 的**注册面在 bundle（`plugin-host.js`）内**，**不在** `lib/rpc-voice.cjs`（后者仍只注册 `voice/status`）——其参数校验 schema 仍在 `lib/rpc-schema.cjs`（schema 面与注册面**可分离**）。两侧同挂 `/dsh-voice-prompt-enhancer/rpc`，合计 **15** 条（以 `harness.handle(` 枚举逐条对照 —— **P2-3 起派生面 = `lib/` 下全部非生成 `.cjs` + `plugin-host.js`**，可由 `node scripts/rpc-manifest.mjs` 复算）。
 >
