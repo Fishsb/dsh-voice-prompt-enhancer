@@ -139,3 +139,41 @@ test('VCONF-10 默认值：autoEnhanceMode 空串 + correction.windowRounds 1（
   assert.equal(VOICE_CONFIG_DEFAULTS.correction.enabled, false);
   assert.ok(VOICE_CONFIG_KEYS.includes('autoEnhanceMode'), 'VOICE_CONFIG_KEYS 须含 autoEnhanceMode');
 });
+
+test('VCONF-11 ⭐环境噪声下限：两份白名单同形且**不得静默丢弃** floorDb', () => {
+  // 病历（2026-11-12 · Issue #15 后续 · 本批实载入验证命中）：
+  //   `vad` 段白名单在 client `mergeVoice` 与 host `sanitizeVoiceCfg` **各有一份**，两份都只登记
+  //   `enabled`/`silenceMs` ⇒ 设置页把 `floorDb` 写进 patch 后，merge 时被**静默剥掉**
+  //   ⇒ 界面显示「已记录 −41.2 dBFS」而读回是 `undefined` ⇒ 该层永远不生效。
+  //   与 M-3（只改一侧 ⇒ 配置被剥）同族，但更隐蔽：**两侧同时漏**，所以「同形」判据本身是绿的。
+  //   ⇒ 本判据锁三件事：两侧同形、键集固定、以及**往返不丢值**。
+  const mergeVoice = clientMergeVoice();
+  const inputs = [
+    {},
+    { vad: null },
+    { vad: { enabled: true, silenceMs: 2000 } },
+    { vad: { enabled: true, silenceMs: 2000, floorDb: -41.2, floorMeasuredAt: 1763000000000 } },
+    { vad: { enabled: false, silenceMs: 3000, floorDb: -55.5, floorMeasuredAt: 1763000000123.7 } },
+    { vad: { floorDb: 0 } },          // 满量程是合法值，不得当哨兵吞掉
+    { vad: { floorDb: -100 } },       // 下边界合法
+    { vad: { floorDb: -100.1 } },     // 越界 ⇒ null
+    { vad: { floorDb: 1 } },          // 越界 ⇒ null
+    { vad: { floorDb: null } },       // 未测过
+    { vad: { floorDb: 'abc' } },      // 非数字 ⇒ null
+    { vad: { floorDb: NaN } },
+    { vad: { floorMeasuredAt: -5 } }, // 非法时刻 ⇒ 0
+  ];
+  for (const input of inputs) {
+    const host = sanitizeVoiceCfg(input).vad;
+    const client = mergeVoice(input).vad;
+    assert.deepEqual(client, host, 'vad 段必须逐键相等（M-3 同批同形）；输入 ' + JSON.stringify(input));
+    assert.deepEqual(Object.keys(client).sort(), ['enabled', 'floorDb', 'floorMeasuredAt', 'silenceMs'],
+      'vad 键集固定为 enabled + silenceMs + floorDb + floorMeasuredAt');
+  }
+  // 往返不丢值：测完写入的 floorDb 必须原样读回（本批真缺陷的直锁）。
+  const measured = { vad: { enabled: true, silenceMs: 2000, floorDb: -41.2, floorMeasuredAt: 1763000000000 } };
+  assert.equal(mergeVoice(measured).vad.floorDb, -41.2, 'client 侧不得丢弃 floorDb');
+  assert.equal(sanitizeVoiceCfg(measured).vad.floorDb, -41.2, 'host 侧不得丢弃 floorDb');
+  assert.equal(mergeVoice(measured).vad.floorMeasuredAt, 1763000000000, 'client 侧不得丢弃 floorMeasuredAt');
+  assert.equal(sanitizeVoiceCfg(measured).vad.floorMeasuredAt, 1763000000000, 'host 侧不得丢弃 floorMeasuredAt');
+});

@@ -49,7 +49,10 @@ test('CVSTATE-02 工厂使用共享默认值，并保留 VAD 归一化与白名�
     correction: { enabled: true },
   }), {
     filler: { enabled: false },
-    vad: { enabled: true, silenceMs: 2000 },
+    // 2026-11-12（环境噪声下限批）：vad 白名单新增 `floorDb` / `floorMeasuredAt`（缺省 null / 0）。
+    //   ⚠ 这两键此前**两侧同时漏登记** ⇒ 设置页测完写进 patch、merge 时被静默剥掉 ⇒ 该层永不生效
+    //     而界面显示「已记录」（本批实载入验证命中）。键集断言须随**合法新增**同步。
+    vad: { enabled: true, silenceMs: 2000, floorDb: null, floorMeasuredAt: 0 },
     hotkey: { enabled: true, combo: 'Alt+Backquote' },
     autoEnhance: true,
     // UD-0052 / O4（2026-11-08 · 语音四件收口批）：两个新键的默认取形（空串 / 1 轮）。

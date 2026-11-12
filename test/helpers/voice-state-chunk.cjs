@@ -33,7 +33,7 @@ function voiceStateChunkWithDefaults() {
     + '  rpcMethods: __RPC_METHODS__,\n'
     + '  autoSync: false,\n'
     + '});\n'
-    + 'const { VOICE_CFG_KEY, VOICE_CFG_DEFAULTS, normalizeVadSilenceMs, vadSilenceMsOf,\n'
+    + 'const { VOICE_CFG_KEY, VOICE_CFG_DEFAULTS, normalizeVadSilenceMs, vadSilenceMsOf, vadFloorDbOf,\n'
     + '  vadRequiredQuiet, voiceCfgState, mergeVoice, persistVoiceLocal, notifyVoice,\n'
     + '  syncVoiceFromHost, saveVoiceCfg, cleanupLegacyRefine, subscribeVoiceConfig } = __VOICE_STATE__;\n'
     + 'syncVoiceFromHost();\n';
