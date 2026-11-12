@@ -80,12 +80,21 @@ function makeFakeEnv(opts) {
 /** 载入 official-bridge chunk（只取真实实现，不 mock 其内部）。 */
 function loadBridge(env) {
   const src = voiceModules.officialBridgeSource();
+  // ⚠ 2026-11-12：桥现在在工厂正文内 `require('./official-recording-probe.cjs')`
+  //   （官方 Recording 探针）。本夹具的 new Function 必须提供可解析该相对 id 的 require，
+  //   否则会抛 `require is not defined`。解析基准 = 桥自身所在目录。
+  const chunkRequire = (id) => {
+    if (typeof id === 'string' && (id.startsWith('./') || id.startsWith('../'))) {
+      return require(path.resolve(ROOT, 'src/client/domains/voice', id));
+    }
+    return require(id);
+  };
   const factory = new Function(
-    'window', 'document', 'navigator', 'MutationObserver', 'voiceCfgState', 'vadRequiredQuiet', 'vadSilenceMsOf',
+    'window', 'document', 'navigator', 'MutationObserver', 'voiceCfgState', 'vadRequiredQuiet', 'vadSilenceMsOf', 'require',
     src + '\n;return officialVoiceBridge;'
   );
   return factory(env.window, env.document, env.navigator, env.MutationObserver,
-    { value: { vad: { enabled: false } } }, () => 20, () => 2000);
+    { value: { vad: { enabled: false } } }, () => 20, () => 2000, chunkRequire);
 }
 
 /**
