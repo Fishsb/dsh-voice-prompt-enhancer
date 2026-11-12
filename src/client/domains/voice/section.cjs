@@ -122,6 +122,11 @@ function OfficialVoiceDiag(props) {
   // title 兼作「原始读数」出口：官方失败出口文案 / 派发点击计数 / 包装调用计数（排查用）
   const diagTitle = [snap.feedbackMessage, snap.abandonReason,
     'sessions=' + snap.sessionsStarted, 'missed=' + snap.sessionsMissed,
+    // ⚠ 2026-11-12：`missed` 是**累计值、只增不减**（唯一归零点在 uninstall）⇒ 用户看到
+    //   「没看到录音过程」时无法判断是**刚才那次**还是几天前的陈年残留。
+    //   把发生时刻一并暴露在 title（原始读数出口），与 `lastFailAt=` 同体例。
+    'lastMissedAt=' + (snap.lastMissedAt ? new Date(snap.lastMissedAt).toISOString() : '-'),
+    'probeVia=' + (snap.lastProbeVia || '-'),
     'startClicks=' + snap.startClicks, 'stopClicks=' + snap.stopClicks,
     // ⚠ CHG-090：`stopMissed` 此前**只**在 snapshot 里、用户任何可见面都读不到
     //   ⇒ 与 `stopClicks` 相邻只读暴露（`stopClicks` 成功停 / `stopMissed` 停派发失败，成对可判）。

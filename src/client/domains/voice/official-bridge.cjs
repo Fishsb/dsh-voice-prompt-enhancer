@@ -248,6 +248,7 @@ function ovbBus() {
       sessionsStarted: 0,       // 观察到的官方会话数（相位上升沿）
       sessionsMissed: 0,        // 有会话但包装器从未被调用的次数（= 自动停未生效）
       lastMissedAt: 0,
+  lastProbeVia: '',
       callCount: 0,             // 包装器被调用的**总次数**（诊断/判 missed 用）
       callCountAtPrevSessionEnd: 0, // 上一次会话收口时的调用计数（判 missed 的窗口下界）
       abandonReason: '',        // 显式降级原因（''=无降级）
@@ -328,6 +329,7 @@ function ovbSnapshot() {
     sessionsStarted: b.sessionsStarted,
     sessionsMissed: b.sessionsMissed,
     lastMissedAt: b.lastMissedAt,
+    lastProbeVia: b.lastProbeVia || '',
     abandonReason: b.abandonReason,
     recording: !!b.active,
     lastEndedAt: b.lastEndedAt,
@@ -1231,6 +1233,9 @@ function installOfficialVoiceBridge() {
     const res = probe(OVB_ACTIVITY_ATTR, document);
     const recordingPhase = (res && res.phase === OVB_RECORDING_PHASE);
     const live = !!(res && res.found && res.recording);
+    // 2026-11-12：记录探针命中路径（container-button / container / mic-button），
+    //   使「missed 到底是没找到容器还是没找到实例」可判（此前只有布尔结果）。
+    if (res && res.found && res.via) b.lastProbeVia = res.via;
     if (live && recordingPhase && !vadSessionActive) {
       // Session start: clear the previous session's demotion reason, then open a VAD.
       b.abandonReason = '';
