@@ -15,7 +15,7 @@ test('CI18N-01 旧 i18n chunk 退役，普通模块与测试单一入口在位',
   assert.equal(typeof EN, 'object');
 });
 
-test('CI18N-02 ZH/EN 顶层键集完全相等且保持 312 键', () => {
+test('CI18N-02 ZH/EN 顶层键集完全相等且保持 317 键', () => {
   // 2026-11-08（语音四件收口批）：299 → **305**（+6 键，逐项可归因：`voiceAutoEnhanceModeLabel` /
   //   `voiceAutoEnhanceModeTip` / `voiceAutoEnhanceModeFollow` / `voiceCorrectionWindowLabel` /
   //   `voiceCorrectionWindowTip` / `voiceCorrectionWindowUnit`；中英各加 6，两侧仍相等）。
@@ -25,8 +25,11 @@ test('CI18N-02 ZH/EN 顶层键集完全相等且保持 312 键', () => {
   const enKeys = Object.keys(EN).sort();
   // 2026-11-12（环境噪声下限批）：306 → **312**（+6 键，逐项可归因：`voiceFloorTest` / `voiceFloorMeasuring` /
   //   `voiceFloorDone` / `voiceFloorCurrent` / `voiceFloorUnset` / `voiceFloorTooFew`；中英各加 6，两侧仍相等）。
-  assert.equal(zhKeys.length, 312);
-  assert.equal(enKeys.length, 312);
+  // 2026-11-12（环境噪声测量修复）：312 → **317**（+5 键，逐项可归因：`voiceFloorNoBridge` /
+  //   `voiceFloorNoPermission` / `voiceFloorNoDevice` / `voiceFloorUnsupported` / `voiceFloorFailed`——
+  //   失败原因必须**分开可见**，一律报「采样不足」会把「没给麦克风权限」误导成「环境太安静」）。
+  assert.equal(zhKeys.length, 317);
+  assert.equal(enKeys.length, 317);
   assert.deepEqual(zhKeys, enKeys);
 });
 

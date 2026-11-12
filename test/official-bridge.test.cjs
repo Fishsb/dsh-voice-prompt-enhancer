@@ -2090,6 +2090,89 @@ test('OVB-FLOOR-06 未测过时起音确认仍是 3 帧（向后兼容，不因�
   assert.equal(env.stopButton.clicks, 0, '未测过 ⇒ 2 帧不足以确认语音 ⇒ 不得判停（既有行为不变）');
 });
 
+test('OVB-FLOOR-07 顶层消费面必须存在 amplitudeNow / measureAmbient（防「能力在 _internal、调用面 undefined」）', async () => {
+  // 病历（2026-11-12 真机）：设置页点「测试环境噪声」恒显示「采样不足」。
+  //   根因之一：两个方法**只挂在 `_internal` 下**，而设置页读的是 `officialVoiceBridge.amplitudeNow`
+  //   ⇒ 恒 `undefined` ⇒ 一次采集都不发生 ⇒ 永远采样不足。
+  //   与「探针只在测试里有、生产没传」同族：**能力存在但调用面读不到 = 静默失效**。
+  //   ⇒ 本判据锁「顶层可直接调用」，而不是「_internal 里有定义」。
+  const env = makeFakeEnv({ recordingPhase: true });
+  installGenFrames(env, stageGen([{ frames: 5, rms: AMB_LOW }]));
+  const bridge = loadBridgeWithFloor(env, null);
+  assert.equal(typeof bridge.amplitudeNow, 'function', '顶层必须有 amplitudeNow');
+  assert.equal(typeof bridge.measureAmbient, 'function', '顶层必须有 measureAmbient');
+  assert.equal(typeof bridge._internal.amplitudeNow, 'function', '_internal 保留（测试与内部核对用）');
+});
+
+test('OVB-FLOOR-08 measureAmbient 自开麦：参数与官方 preview() 一致，且用后必释放', async () => {
+  // 为什么不读 amplitudeNow：官方 `Recording.amplitude()` 依赖 analyser，只在 preview() 开麦后存在；
+  //   插件侧 _liveAmp 也只在录音会话建立时才有值 ⇒ **不录音就没有任何电平可读**。
+  //   测量必须在录音之前做 ⇒ 只能自己开麦。
+  //   参数必须与官方 preview() 逐字一致（echoCancellation / noiseSuppression 均 true），
+  //   否则测的是「裸麦电平」而实际录音走「降噪后电平」⇒ 下限与判据不在同一尺度上。
+  const calls = [];
+  let stops = 0, closes = 0;
+  const analyser = {
+    fftSize: 0,
+    getFloatTimeDomainData(buf) {
+      const amp = 0.0047 * Math.SQRT2;
+      for (let i = 0; i < buf.length; i++) buf[i] = amp * Math.sin(2 * Math.PI * i / buf.length);
+    },
+  };
+  const env = makeFakeEnv({ recordingPhase: true });
+  env.navigator.mediaDevices.getUserMedia = async (c) => {
+    calls.push(c);
+    return { getTracks: () => [{ stop: () => { stops++; } }] };
+  };
+  env.window.AudioContext = function () {
+    return {
+      createAnalyser: () => analyser,
+      createMediaStreamSource: () => ({ connect: () => {} }),
+      close: () => { closes++; return Promise.resolve(); },
+    };
+  };
+  installGenFrames(env, stageGen([{ frames: 5, rms: AMB_LOW }]));
+  const bridge = loadBridgeWithFloor(env, null);
+  // ⚠ measureAmbient 内部的 setInterval/setTimeout 来自**工厂依赖**（测试桩 env 的假 timer）
+  //   ⇒ 必须等 getUserMedia 的 microtask 落地后再泵 timer，否则一个样本都采不到。
+  const pending = bridge.measureAmbient(300);
+  await Promise.resolve();          // 让 getUserMedia 的 await 先落地
+  await Promise.resolve();
+  for (let k = 0; k < 6; k++) {
+    for (const t of env.timers) { if (!t.cleared && t.ms === 100) t.fn(); }
+  }
+  for (const t of env.timers) { if (!t.cleared && t.ms > 100) t.fn(); }
+  const res = await pending;
+  assert.equal(res.ok, true, 'measureAmbient 必须成功返回');
+  assert.ok(res.samples.length >= 5, '必须采到足够样本（实测 ≥5 才可算 p95）');
+  assert.equal(calls.length, 1, '必须恰好开麦一次');
+  assert.equal(calls[0].audio.echoCancellation, true, 'echoCancellation 必须与官方 preview() 一致');
+  assert.equal(calls[0].audio.noiseSuppression, true, 'noiseSuppression 必须与官方 preview() 一致');
+  assert.equal(stops, 1, '麦克风轨道必须释放（否则随后录音撞「设备占用」）');
+  assert.equal(closes, 1, 'AudioContext 必须关闭');
+});
+
+test('OVB-FLOOR-09 measureAmbient 失败原因可分辨（权限/设备/不支持，不得一律报「采样不足」）', async () => {
+  // 一律报「采样不足」会把「没给麦克风权限」误导成「环境太安静」——「读数说反话」同族缺陷。
+  const cases = [
+    { gumName: 'NotAllowedError', expect: 'permission' },
+    { gumName: 'NotFoundError', expect: 'device-missing' },
+    { gumName: 'OverconstrainedError', expect: 'device-missing' },
+  ];
+  for (const c of cases) {
+    const env = makeFakeEnv({ recordingPhase: true });
+    env.navigator.mediaDevices.getUserMedia = async () => {
+      const e = new Error('fail'); e.name = c.gumName; throw e;
+    };
+    env.window.AudioContext = function () { return { createAnalyser: () => ({ fftSize: 0, getFloatTimeDomainData() {} }), createMediaStreamSource: () => ({ connect: () => {} }), close: () => {} }; };
+    installGenFrames(env, stageGen([{ frames: 5, rms: AMB_LOW }]));
+    const bridge = loadBridgeWithFloor(env, null);
+    const res = await bridge.measureAmbient(100);
+    assert.equal(res.ok, false, c.gumName + ' ⇒ 必须失败');
+    assert.equal(res.reason, c.expect, c.gumName + ' ⇒ 原因必须是 ' + c.expect);
+  }
+});
+
 test('OVB-VAD-14 取帧源单一化：官方 Recording.amplitude()（旧 float/byte 双路径已退役）', async () => {
   const src = readChunk();
   // ⚠ 2026-11-12（#15 架构改向）：桥不再自建 AudioContext 取帧，改为读官方 amplitude()。
@@ -2099,9 +2182,31 @@ test('OVB-VAD-14 取帧源单一化：官方 Recording.amplitude()（旧 float/b
   assert.ok(/function ovbStartVad\(getAmp, onSilence\)/.test(src),
     'ovbStartVad 必须接收 getAmp（官方 amplitude 读取器），不得再接收 stream');
   assert.ok(src.indexOf('getAmp()') >= 0, '必须实际调用 getAmp() 取帧');
-  assert.equal(src.indexOf('createMediaStreamSource'), -1, '不得残留自建 AudioContext 采集（已退役）');
   assert.equal(src.indexOf('getByteTimeDomainData'), -1, '不得残留 8-bit 回落路径（已退役）');
   assert.equal(src.indexOf('wrappedGetUserMedia'), -1, '不得残留 getUserMedia 包装（已退役）');
+  // ⚠ 2026-11-12（环境噪声测量修复）：`createMediaStreamSource` **重新出现**，但用途不同——
+  //   它不再位于 VAD 取帧路径，而是仅出现在 `ovbMeasureAmbient` 里（设置页测环境电平，必须先开麦）。
+  //   ⇒ 判据从「全文不得出现」收紧为「**VAD 取帧路径内**不得出现」：
+  //     即 `ovbStartVad` 的函数体里不得有任何自建采集（取帧只能走官方 `getAmp()`）。
+  const startVadIdx = src.indexOf('ovbStartVad(getAmp, onSilence)');
+  assert.ok(startVadIdx >= 0, 'ovbStartVad 必须在位');
+  // ⚠ 切取范围必须覆盖**整个 ovbStartVad 方法体**：用花括号配平，不用「下一个 `\n  };`」
+  //   （后者会停在函数内部第一个缩进收尾处，导致判据只看到头部 ⇒ 负控都不红 = 判据失效）。
+  let __d = 0, __k = src.indexOf('{', startVadIdx), __end = -1;
+  for (; __k < src.length; __k++) {
+    if (src[__k] === '{') __d++;
+    else if (src[__k] === '}') { __d--; if (__d === 0) { __end = __k + 1; break; } }
+  }
+  const startVadBody = src.slice(startVadIdx, __end > 0 ? __end : src.length);
+  assert.equal(startVadBody.indexOf('createMediaStreamSource'), -1,
+    'VAD 取帧路径内不得自建 AudioContext 采集（已退役，取帧只走官方 amplitude）');
+  assert.equal(startVadBody.indexOf('getFloatTimeDomainData'), -1,
+    'VAD 取帧路径内不得自读时域数据（已退役）');
+  // 自建采集只允许存在于「环境噪声测量」这一处（设置页用，必须先开麦才能测环境电平）。
+  const measureIdx = src.indexOf('const ovbMeasureAmbient');
+  assert.ok(measureIdx >= 0, '环境噪声测量函数必须在位');
+  const firstCreate = src.indexOf('createMediaStreamSource');
+  assert.ok(firstCreate > measureIdx, '自建采集只允许出现在 ovbMeasureAmbient 内部');
   // 分辨率语义：新形态恒为 float（官方 amplitude 内部用 getFloatTimeDomainData）
   assert.ok(/const resolution = OVB_FLOAT_RESOLUTION;/.test(src), '分辨率须固定为 float 台阶');
   // ④ B 方向两条路径都必须判停

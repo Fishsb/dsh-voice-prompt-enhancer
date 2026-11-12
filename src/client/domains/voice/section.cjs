@@ -605,33 +605,43 @@ function VoiceSection(props) {
     if (measuring) return;
     setMeasuring(true);
     setMeasureMsg(t('voiceFloorMeasuring'));
-    const samples = [];
-    let timer = null;
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      if (timer && typeof clearInterval === 'function') clearInterval(timer);
+    // ⚠ **必须用桥的自开麦测量**（2026-11-12 真机修复）：
+    //   原实现读 `officialVoiceBridge.amplitudeNow()`，但那条路径只在**录音会话进行中**有值
+    //   （`b._liveAmp` 由 `syncSession()` 在进入 recording 相位时才赋值）⇒ 不录音时恒 null
+   
+    //   ⇒ 一个样本都采不到 ⇒ 永远「采样不足」。测量必须在录音之前做，所以只能自己开麦
+    //   （官方 `Recording.amplitude()` 同理依赖 `analyser`，只有开麦后才存在）。
+    const bridge = officialVoiceBridge;
+    if (!bridge || typeof bridge.measureAmbient !== 'function') {
       setMeasuring(false);
-      if (samples.length < 5) { setMeasureMsg(t('voiceFloorTooFew')); return; }
+      setMeasureMsg(t('voiceFloorNoBridge'));
+      return;
+    }
+    const finishWith = (samples) => {
+      setMeasuring(false);
+      if (!samples || samples.length < 5) { setMeasureMsg(t('voiceFloorTooFew')); return; }
       const sorted = samples.slice().sort(function (a, b) { return a - b; });
+      // p95 = 环境电平的「上沿」（偶发声响不把下限拉高——用均值/最大值都会偏高）。
       const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
       const db = 20 * Math.log10(Math.max(p95, 1e-9));
       const floor = Math.max(-100, Math.min(0, Math.round((db + 5) * 10) / 10));
       saveVoiceCfg({ vad: { enabled: vadOn, silenceMs: silenceMsNow, floorDb: floor, floorMeasuredAt: Date.now() } });
       setMeasureMsg(t('voiceFloorDone').replace('{db}', String(floor)));
     };
-    const collect = () => {
-      try {
-        const amp = (officialVoiceBridge && typeof officialVoiceBridge.amplitudeNow === 'function')
-          ? officialVoiceBridge.amplitudeNow() : null;
-        if (typeof amp === 'number' && amp > 0) samples.push(amp);
-      } catch (e) { /* 单帧失败忽略 */ }
-    };
-    if (typeof setInterval === 'function') {
-      timer = setInterval(collect, 100);
-      if (typeof setTimeout === 'function') setTimeout(finish, 3000);
-    } else { finish(); }
+    Promise.resolve(bridge.measureAmbient(3000)).then(function (res) {
+      if (res && res.ok === true) { finishWith(res.samples); return; }
+      setMeasuring(false);
+      // ⚠ 失败原因必须**分开可见**：一律显示「采样不足」会把「没给麦克风权限」
+      //   误导成「环境太安静」——正是本项目反复出现的「读数说反话」同族缺陷。
+      const reason = (res && res.reason) || 'unexpected';
+      if (reason === 'permission') setMeasureMsg(t('voiceFloorNoPermission'));
+      else if (reason === 'device-missing') setMeasureMsg(t('voiceFloorNoDevice'));
+      else if (reason === 'no-media-devices' || reason === 'no-audio-context') setMeasureMsg(t('voiceFloorUnsupported'));
+      else setMeasureMsg(t('voiceFloorFailed'));
+    }).catch(function () {
+      setMeasuring(false);
+      setMeasureMsg(t('voiceFloorFailed'));
+    });
   };
   const floorRow = React.createElement('div', { className: 'dsh-plg-row' },
     React.createElement('button', {

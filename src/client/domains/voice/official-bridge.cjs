@@ -26,6 +26,82 @@ function createOfficialVoiceBridge(deps) {
     if (n < -100 || n > 0) return null;
     return n;
   };
+    /* 环境噪声实测（2026-11-12 · 真机「采样不足」修复）：自己开麦采 100ms x N 帧 RMS。
+       ⚠ 为什么必须自己开麦：官方 Recording.amplitude() 依赖 analyser，而它只在 preview()
+         开麦后才存在；插件侧 b._liveAmp 也只在录音会话建立时才有值
+         ⇒ 不录音时没有任何电平可读 ⇒ 原实现永远「采样不足」。
+       ⚠ 与已删除的「包装 getUserMedia 劫持」性质不同：那次是 monkey-patch 全局去截别人的流；
+         这里只是像官方一样为自己按需开一次麦，用完立即释放，不触碰任何全局对象。
+       ⚠ 参数与官方 preview() 逐字一致（echoCancellation/noiseSuppression 均 true），
+         否则测到的是「裸麦电平」而实际录音走「降噪后电平」⇒ 下限与判据不在同一尺度上。 */
+    const ovbMeasureAmbient = async (durationMs) => {
+      const ms = (typeof durationMs === 'number' && durationMs > 0) ? Math.min(durationMs, 10000) : 3000;
+      const out = { ok: false, samples: [], reason: '', error: '' };
+      let stream = null;
+      let ctx = null;
+      let analyser = null;
+      try {
+        const nav = (typeof navigator !== 'undefined' && navigator) || null;
+        const md = nav && nav.mediaDevices;
+        if (!md || typeof md.getUserMedia !== 'function') { out.reason = 'no-media-devices'; return out; }
+        const AudioCtor = (typeof window !== 'undefined' && window)
+          ? (window.AudioContext || window.webkitAudioContext || null) : null;
+        if (!AudioCtor) { out.reason = 'no-audio-context'; return out; }
+        try {
+          stream = await md.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true },
+            video: false,
+          });
+        } catch (e) {
+          const name = (e && e.name) ? String(e.name) : '';
+          out.reason = name === 'NotAllowedError' ? 'permission'
+            : (name === 'NotFoundError' || name === 'OverconstrainedError') ? 'device-missing'
+            : 'get-user-media-failed';
+          out.error = name || String((e && e.message) || e);
+          return out;
+        }
+        ctx = new AudioCtor();
+        analyser = ctx.createAnalyser();
+        const SAMPLES = 256;
+        analyser.fftSize = SAMPLES;
+        ctx.createMediaStreamSource(stream).connect(analyser);
+        const buf = new Float32Array(SAMPLES);
+        const collect = () => {
+          try {
+            analyser.getFloatTimeDomainData(buf);
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+            const rms = Math.sqrt(sum / buf.length);
+            /* 只收 > 0 的帧：全 0 是「分析器还没出数」而非「环境绝对安静」，
+               混进来会把 p95 拉低 ⇒ 下限偏低 ⇒ 兜底失效（与测量目的相反）。 */
+            if (Number.isFinite(rms) && rms > 0) out.samples.push(rms);
+          } catch (e) { /* 单帧失败忽略 */ }
+        };
+        await new Promise((resolve) => {
+          const tick = (typeof setInterval === 'function') ? setInterval(collect, 100) : (collect(), null);
+          const done = () => {
+            try { if (tick && typeof clearInterval === 'function') clearInterval(tick); } catch (e) { /* ignore */ }
+            resolve();
+          };
+          if (typeof setTimeout === 'function') setTimeout(done, ms);
+          else done();
+        });
+        out.ok = true;
+        return out;
+      } catch (e) {
+        out.reason = 'unexpected';
+        out.error = String((e && e.message) || e);
+        return out;
+      } finally {
+        /* 无论成败都必须释放麦克风（否则随后录音会撞「设备占用」）。 */
+        try {
+          if (stream && typeof stream.getTracks === 'function') {
+            for (const tr of stream.getTracks()) { try { tr.stop(); } catch (e) { /* ignore */ } }
+          }
+        } catch (e) { /* ignore */ }
+        try { if (ctx && typeof ctx.close === 'function') ctx.close(); } catch (e) { /* ignore */ }
+      }
+    };
   // ⚠ 2026-11-12（#15 架构改向）：Recording 探针**在此处 require**。
   //   ⚠⚠ 必须写在工厂正文内，不能写在模块顶层：测试夹具 factoryBody() 只切取
   //     「工厂正文」（依赖声明之后 → return 之前），写在顶层会被切掉 ⇒ 生产有、测试无（或反之）。
@@ -1369,6 +1445,14 @@ const officialVoiceBridge = {
     // N-1 判据基元：官方当前是否确在录音（只读官方相位属性）——供测试与运行期核对
     recordingNow: ovbRecordingNow,
   },
+  /* 顶层消费面（2026-11-12 真机「采样不足」第二根因）：这两个方法此前只挂在 _internal 下，
+     而设置页读的是 officialVoiceBridge.amplitudeNow ⇒ 恒 undefined ⇒ 按钮永远说「采样不足」。
+     与「探针只在测试里有、生产没传」同族：能力存在但调用面读不到 = 静默失效。 */
+  amplitudeNow: () => {
+    const bus = ovbBus();
+    return (bus && typeof bus._liveAmp === 'function') ? bus._liveAmp() : null;
+  },
+  measureAmbient: (durationMs) => ovbMeasureAmbient(durationMs),
 };
 
 
