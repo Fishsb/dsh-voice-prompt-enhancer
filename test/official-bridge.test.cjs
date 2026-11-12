@@ -2173,6 +2173,45 @@ test('OVB-FLOOR-09 measureAmbient 失败原因可分辨（权限/设备/不支�
   }
 });
 
+test('OVB-FLOOR-10 floorDb 低于真实环境时不得把噪底压到环境以下（否则永远不停）', async () => {
+  // 病历（2026-11-13 · 用户真机 floorDb=-50.8 反推）：
+  //   floorDb 线性 0.00288，噪底上界(floorDb-5dB)=0.00162，开阈=0.00405。
+  //   而真实环境约 0.0048（-46.4 dBFS 量级）⇒ **开阈低于环境** ⇒ 环境帧全被判「有声」
+  //   ⇒ 反向锁一开就永真、quietFrames 永不增长 ⇒ **永远不停**。
+  //   ⚠ 这比「不钳制」更坏：不钳制至少能靠分位自愈。
+  //   ⇒ 上界只在「窗口里确有低于上界的样本」时启用；否则整层不钳制（退回分位）。
+  const env = makeFakeEnv({ recordingPhase: true });
+  // 环境恒定 0.0048（真实电平），floorDb 设成远低于它的 -50.8
+  installGenFrames(env, stageGen([
+    { frames: 5, rms: 0.0048 },
+    ...speechEnv(0.09, 0.0048, 12, 2),
+    { frames: 400, rms: 0.0048 },
+  ]));
+  const bridge = loadBridgeWithFloor(env, -50.8);
+  bridge.install();
+  env.document._attr = 'recording';
+  env.pump();
+  runVad(env);
+  assert.equal(env.stopButton.clicks, 1, 'floorDb 低于真实环境 ⇒ 仍须靠分位判停（不得被钳死）');
+});
+
+test('OVB-FLOOR-11 floorDb 高于真实环境时钳制仍生效（保住上一版的修复）', async () => {
+  // 反向：floorDb 比环境高（测时更吵）⇒ 上界有效 ⇒ 噪底可被压低，防止被语音污染。
+  const env = makeFakeEnv({ recordingPhase: true });
+  installGenFrames(env, stageGen([
+    { frames: 5, rms: 0.0048 },
+    ...speechEnv(0.09, 0.0048, 12, 2),
+    { frames: 400, rms: 0.0048 },
+  ]));
+  // floorDb = -30 dBFS（线性 0.0316）远高于环境 0.0048 ⇒ 上界 0.0316/1.78=0.0178 仍高于环境
+  const bridge = loadBridgeWithFloor(env, -30);
+  bridge.install();
+  env.document._attr = 'recording';
+  env.pump();
+  runVad(env);
+  assert.equal(env.stopButton.clicks, 1, 'floorDb 高于环境 ⇒ 钳制生效且仍须判停');
+});
+
 test('OVB-VAD-14 取帧源单一化：官方 Recording.amplitude()（旧 float/byte 双路径已退役）', async () => {
   const src = readChunk();
   // ⚠ 2026-11-12（#15 架构改向）：桥不再自建 AudioContext 取帧，改为读官方 amplitude()。
