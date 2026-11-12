@@ -581,6 +581,71 @@ function VoiceSection(props) {
   };
   // 2026-10-18（本批）：静音行显式声明为**单行 flex**（开关 flex:none · 滑块 flex:1 1 auto · 读数 flex:none），
   //   三件在同一行内；滑块吃满剩余宽度，读数紧贴滑块右端（不出现大段空白）。
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 环境噪声测试（2026-11-12 · 用户方案）：采 3 秒环境 → p95 + 5 dB → 写入 vad.floorDb
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 为什么实测而非预设：同一句「小声说话」在不同设备上 dBFS 差可达 25 dB
+  //   （高增益 USB 麦 ≈ -15，笔记本内置麦 ≈ -40）⇒ 预设值必然对一半设备失效。
+  // 为什么取 p95 而非均值：测试期间偶发声响（关门/咳嗽）会把均值拉高 ⇒ 下限偏高 ⇒ 兜底失效。
+  // 为什么 +5 dB：≈ 音量翻倍，是「明显高于环境」的最小可辨差（用户拍板值）。
+  // ⚠ 为什么就地读 `voiceCfgState.value.vad.floorDb` 而不注入读取器（2026-11-12）：
+  //   `test/helpers/client-voice-modules.cjs` 的 factoryBody() 用「工厂内第一个 `//`」当正文起点、
+  //   把**依赖声明块整段切掉**后再交给测试沙箱按符号名注入 ⇒ 在依赖声明区新加一行注释会
+  //   把边界上移到该行，令其后的 `const <符号> = d.<符号>` 全部重新落入正文，与工厂形参重名 ⇒
+  //   `Identifier 'X' has already been declared`（本次真实事故）。就地读配置既避开该陷阱，
+  //   也与 official-bridge.cjs 的 floorDb 读取保持**同一形态**（单一事实源，无第二处接线）。
+  const floorDbNow = (function () {
+    const vd = voiceCfgState && voiceCfgState.value && voiceCfgState.value.vad;
+    const n = vd && typeof vd.floorDb === 'number' ? vd.floorDb : NaN;
+    return Number.isFinite(n) && n >= -100 && n <= 0 ? n : null;
+  })();
+  const [measuring, setMeasuring] = React.useState(false);
+  const [measureMsg, setMeasureMsg] = React.useState('');
+  const runFloorMeasure = () => {
+    if (measuring) return;
+    setMeasuring(true);
+    setMeasureMsg(t('voiceFloorMeasuring'));
+    const samples = [];
+    let timer = null;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (timer && typeof clearInterval === 'function') clearInterval(timer);
+      setMeasuring(false);
+      if (samples.length < 5) { setMeasureMsg(t('voiceFloorTooFew')); return; }
+      const sorted = samples.slice().sort(function (a, b) { return a - b; });
+      const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+      const db = 20 * Math.log10(Math.max(p95, 1e-9));
+      const floor = Math.max(-100, Math.min(0, Math.round((db + 5) * 10) / 10));
+      saveVoiceCfg({ vad: { enabled: vadOn, silenceMs: silenceMsNow, floorDb: floor, floorMeasuredAt: Date.now() } });
+      setMeasureMsg(t('voiceFloorDone').replace('{db}', String(floor)));
+    };
+    const collect = () => {
+      try {
+        const amp = (officialVoiceBridge && typeof officialVoiceBridge.amplitudeNow === 'function')
+          ? officialVoiceBridge.amplitudeNow() : null;
+        if (typeof amp === 'number' && amp > 0) samples.push(amp);
+      } catch (e) { /* 单帧失败忽略 */ }
+    };
+    if (typeof setInterval === 'function') {
+      timer = setInterval(collect, 100);
+      if (typeof setTimeout === 'function') setTimeout(finish, 3000);
+    } else { finish(); }
+  };
+  const floorRow = React.createElement('div', { className: 'dsh-plg-row' },
+    React.createElement('button', {
+      type: 'button',
+      className: 'dsh-plg-btn',
+      disabled: measuring,
+      onClick: runFloorMeasure,
+    }, measuring ? t('voiceFloorMeasuring') : t('voiceFloorTest')),
+    React.createElement('span', { className: 'dsh-plg-muted' },
+      measureMsg || (floorDbNow === null
+        ? t('voiceFloorUnset')
+        : t('voiceFloorCurrent').replace('{db}', String(floorDbNow)))),
+  );
+
   const silenceRow = React.createElement('div', { className: 'dsh-plg-row dsh-vi-silence-row', style: { flexWrap: 'nowrap' } },
     // 静音监测（原「静音自动停」）：自述式切换按钮「静音监测开/关」——**从第一行搬来**
     React.createElement(ToggleChip, {
@@ -609,6 +674,7 @@ function VoiceSection(props) {
     row1,
     tuningRow,
     silenceRow,
+    floorRow,
     // P1-a：识别引擎/模型由官方管理 —— 此处只报就绪态（不再提供引擎/模型选择）
     React.createElement('div', { className: 'dsh-plg-row' },
       // 2026-10-17（§7.4 ①「状态复述」）：**正常态不再复述**。

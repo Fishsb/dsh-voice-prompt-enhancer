@@ -17,6 +17,15 @@ function createVoiceState(deps) {
       }
       return VOICE_CFG_DEFAULTS.vad.silenceMs;
     };
+  // 环境噪声下限归一（2026-11-12 · 与 host 契约同形）：dBFS ∈ [-100, 0]，其余 ⇒ null（未测过）。
+  const normalizeVadFloorDb = typeof d.normalizeVadFloorDb === 'function'
+    ? d.normalizeVadFloorDb
+    : (value) => {
+      const n = typeof value === 'number' ? value : NaN;
+      if (!Number.isFinite(n)) return null;
+      if (n < -100 || n > 0) return null;
+      return Math.round(n * 10) / 10;
+    };
   const storage = d.storage !== undefined
     ? d.storage
     : (typeof localStorage !== 'undefined' ? localStorage : null);
@@ -47,6 +56,11 @@ function createVoiceState(deps) {
     return normalizeVadSilenceMs(v && v.vad ? v.vad.silenceMs : undefined);
   }
 
+  // 环境噪声绝对下限（2026-11-12）：读配置 → dBFS 数值或 null（未测过）。
+  //   ⚠ 与 vadSilenceMsOf 同构：单一事实源 = voiceCfgState.value.vad.floorDb。
+  function vadFloorDbOf(v) {
+    return normalizeVadFloorDb(v && v.vad ? v.vad.floorDb : undefined);
+  }
   function vadRequiredQuiet(silenceMs) {
     const ms = normalizeVadSilenceMs(silenceMs);
     const poll = 100; // = 录音轮询粒度（内部实现，不对外暴露）
@@ -204,9 +218,11 @@ function createVoiceState(deps) {
     VOICE_CFG_KEY,
     VOICE_CFG_DEFAULTS,
     normalizeVadSilenceMs,
+    normalizeVadFloorDb,
     normalizeAutoEnhanceMode,
     normalizeCorrectionWindowRounds,
     vadSilenceMsOf,
+    vadFloorDbOf,
     vadRequiredQuiet,
     voiceCfgState,
     mergeVoice,

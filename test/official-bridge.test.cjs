@@ -294,7 +294,7 @@ function loadBridge(env, cfg) {
   if (cfg !== undefined) S.voiceCfgState.value = cfg;
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     src + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -304,7 +304,7 @@ function loadBridge(env, cfg) {
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, () => null, chunkRequire
   );
   bridge.setTimer(env.timerSvc);
   return bridge;
@@ -1179,7 +1179,7 @@ function loadMutant(env, kind) {
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     src + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -1189,7 +1189,7 @@ function loadMutant(env, kind) {
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, () => null, chunkRequire
   );
   bridge.setTimer(env.timerSvc);
   return bridge;
@@ -1240,7 +1240,7 @@ test('OVB-V04 变异自证·幂等判据有牙：破坏幂等 ⇒ 层数判据�
   const S4 = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     mutated + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -1250,7 +1250,7 @@ test('OVB-V04 变异自证·幂等判据有牙：破坏幂等 ⇒ 层数判据�
     () => {},
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent() { return {}; },
-    S4.vadSilenceMsOf, S4.vadRequiredQuiet, S4.voiceCfgState, chunkRequire
+    S4.vadSilenceMsOf, S4.vadRequiredQuiet, S4.voiceCfgState, () => null, chunkRequire
   );
   bridge.install();
   const firstObs = env.window.__dshPeOfficialBridge.sessionObserver;
@@ -1276,11 +1276,11 @@ test('OVB-V05 变异自证·正例必红：掏空「官方开始按钮查找」�
   const S5 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
     class FakeMO { constructor() {} observe() {} disconnect() {} }, function MouseEvent() { return {}; },
-    S5.vadSilenceMsOf, S5.vadRequiredQuiet, S5.voiceCfgState, chunkRequire);
+    S5.vadSilenceMsOf, S5.vadRequiredQuiet, S5.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const r = bridge.startOfficial();
@@ -1296,11 +1296,11 @@ test('OVB-V06 变异自证·负控必绿：同一变异下「按钮不存在不�
   const S6 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
     class FakeMO { constructor() {} observe() {} disconnect() {} }, function MouseEvent() { return {}; },
-    S6.vadSilenceMsOf, S6.vadRequiredQuiet, S6.voiceCfgState, chunkRequire);
+    S6.vadSilenceMsOf, S6.vadRequiredQuiet, S6.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const r = bridge.startOfficial();
@@ -1322,11 +1322,11 @@ test('OVB-V07 变异自证·正例必红：把 missed 判定退回「上升沿�
   const S7 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
-    function MouseEvent() { return {}; }, S7.vadSilenceMsOf, S7.vadRequiredQuiet, S7.voiceCfgState, chunkRequire);
+    function MouseEvent() { return {}; }, S7.vadSilenceMsOf, S7.vadRequiredQuiet, S7.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   // 精确复现 CDP 实测形态：**调用先落地**（相位尚未出现），相位随后才到 ⇒ 旧口径误报 missed
@@ -1350,11 +1350,11 @@ test('OVB-V08 变异自证·正例必红：把 N-1 守卫退回旧口径 ⇒ N-1
   const S8 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
-    function MouseEvent() { return {}; }, S8.vadSilenceMsOf, S8.vadRequiredQuiet, S8.voiceCfgState, chunkRequire);
+    function MouseEvent() { return {}; }, S8.vadSilenceMsOf, S8.vadRequiredQuiet, S8.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const mo = { cb: () => env.pump() };
@@ -1375,11 +1375,11 @@ test('OVB-V09 变异自证·负控必绿：同一变异下「采集进行中仍�
   const S9 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
-    function MouseEvent() { return {}; }, S9.vadSilenceMsOf, S9.vadRequiredQuiet, S9.voiceCfgState, chunkRequire);
+    function MouseEvent() { return {}; }, S9.vadSilenceMsOf, S9.vadRequiredQuiet, S9.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const mo = { cb: () => env.pump() };
@@ -1438,11 +1438,11 @@ test('OVB-V10 变异自证·正例必红：摘掉 missed 收口判定 ⇒ 迟到
   const SV = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
-    function MouseEvent() { return {}; }, SV.vadSilenceMsOf, SV.vadRequiredQuiet, SV.voiceCfgState, chunkRequire);
+    function MouseEvent() { return {}; }, SV.vadSilenceMsOf, SV.vadRequiredQuiet, SV.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const mo = { cb: () => env.pump() };
@@ -1796,7 +1796,7 @@ function loadMutantBridge(env, mutate) {
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     src + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -1806,7 +1806,7 @@ function loadMutantBridge(env, mutate) {
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, () => null, chunkRequire
   );
   bridge.setTimer(env.timerSvc);
   return bridge;
@@ -1961,6 +1961,133 @@ test('OVB-VAD-17 原理性回归锁：恒定电平（0.018 / 0.02）一律不得
   ]);
   assert.ok(flat20.floor < 0.02, '恒定 0.02 同样不得被抬成底噪（实测 ' + flat20.floor.toFixed(5) + '）');
   assert.ok(flat20.tClick === null || flat20.tClick > 30000, '恒定 0.02 不得在 30 s 内判停（实测 ' + (flat20.tClick === null ? '从未' : flat20.tClick + 'ms') + '）');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 环境噪声绝对下限（2026-11-12 · 用户方案 · 第 1 层）
+// ═══════════════════════════════════════════════════════════════════════════
+// 判据：vad.floorDb = 实测环境 p95 + 5 dB。低于该值 ⇒ 100% 环境，直接算静音。
+//   floorDb = null（未测过）⇒ 该层不生效，行为与既有完全一致（向后兼容）。
+function loadBridgeWithFloor(env, floorDb) {
+  const src = readChunk();
+  const S = loadStateForBridge(env);
+  S.voiceCfgState.value = { vad: { enabled: true, silenceMs: 2000, floorDb: floorDb } };
+  const factory = new Function(
+    'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    src + '\n;return officialVoiceBridge;'
+  );
+  let seq = 0;
+  const bridge = factory(env.window, env.document, env.navigator, env.localStorage,
+    (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
+    (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
+    function MouseEvent(type, init) { return { type, init }; },
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState,
+    chunkRequire);
+  bridge.setTimer(env.timerSvc);
+  return bridge;
+}
+
+test('OVB-FLOOR-01 未测过（floorDb=null）⇒ 第 1 层不生效，行为与既有一致', async () => {
+  const env = makeFakeEnv({ recordingPhase: true });
+  installGenFrames(env, stageGen([
+    { frames: 5, rms: AMB_LOW },
+    ...speechEnv(0.09, AMB_LOW, 12, 2),
+    { frames: 300, rms: AMB_LOW },
+  ]));
+  const bridge = loadBridgeWithFloor(env, null);
+  bridge.install();
+  env.document._attr = 'recording';
+  env.pump();
+  runVad(env);
+  assert.equal(env.stopButton.clicks, 1, '未测过 ⇒ 走既有相对判据，说完仍须能停');
+});
+
+test('OVB-FLOOR-02 实测下限生效：低于下限的帧直接算静音（不依赖相对阈值）', async () => {
+  // 环境恒定 -60 dBFS（≈0.001），下限设 -50 dBFS（≈0.00316）。
+  // 所有环境帧都低于下限 ⇒ 应直接算静音，且**不需要**相对阈值配合。
+  const env = makeFakeEnv({ recordingPhase: true });
+  installGenFrames(env, stageGen([
+    { frames: 5, rms: 0.001 },
+    ...speechEnv(0.09, 0.001, 12, 2),
+    { frames: 300, rms: 0.001 },
+  ]));
+  const bridge = loadBridgeWithFloor(env, -50);
+  bridge.install();
+  env.document._attr = 'recording';
+  env.pump();
+  runVad(env);
+  assert.equal(env.stopButton.clicks, 1, '低于实测下限 ⇒ 必须判停');
+  assert.ok((bridge.snapshot().vadFloorHit || 0) > 0, '须记录「被下限拦截」的帧数（可判、不得静默）');
+});
+
+test('OVB-FLOOR-03 下限过低时不误伤说话：正常说话仍须判停', async () => {
+  // 下限设 -90 dBFS（极低）⇒ 几乎所有帧都高于它 ⇒ 第 1 层几乎不生效，应回落到第 2 层正常判停。
+  const env = makeFakeEnv({ recordingPhase: true });
+  installGenFrames(env, stageGen([
+    { frames: 5, rms: AMB_LOW },
+    ...speechEnv(0.09, AMB_LOW, 12, 2),
+    { frames: 300, rms: AMB_LOW },
+  ]));
+  const bridge = loadBridgeWithFloor(env, -90);
+  bridge.install();
+  env.document._attr = 'recording';
+  env.pump();
+  runVad(env);
+  assert.equal(env.stopButton.clicks, 1, '下限不生效时仍须靠相对判据判停');
+});
+
+test('OVB-FLOOR-04 反向锁：从未说话 ⇒ 即使常低于下限也不得判停', async () => {
+  const env = makeFakeEnv({ recordingPhase: true });
+  installGenFrames(env, stageGen([{ frames: 400, rms: 0.001 }]));
+  const bridge = loadBridgeWithFloor(env, -50);
+  bridge.install();
+  env.document._attr = 'recording';
+  env.pump();
+  runVad(env);
+  assert.equal(env.stopButton.clicks, 0, '从未说话 ⇒ 不得判停（反向锁优先于下限）');
+});
+
+test('OVB-FLOOR-05 小声说话（音节间隙回落）：连续过阈段仅 2 帧 ⇒ 测过环境时仍须判停', async () => {
+  // 真机实证（/tmp/quiet-speech.wav）：小声说话的固有形态是「音节内 2 帧 + 间隙回落」，
+  //   最长连续过阈段只有 2 帧（正常语音 24 帧）。
+  //   ⇒ 若起音确认仍是连续 3 帧，小声说话**永远**建立不了 heardSpeech ⇒ 反向锁永不放开 ⇒ 永不判停。
+  //   测过环境后抗噪职责已由第 1 层承担（明显环境的帧在上一层就被拦掉）⇒ 起音确认降为 2 帧。
+  const env = makeFakeEnv({ recordingPhase: true });
+  // 环境 0.0045；小声语音 ~0.018（比环境高 ~12 dB，但音节间隙回落到环境电平）。
+  const quietFrames = [];
+  for (let k = 0; k < 6; k++) {
+    quietFrames.push({ frames: 1, rms: 0.018 });
+    quietFrames.push({ frames: 1, rms: 0.020 });
+    quietFrames.push({ frames: 1, rms: 0.0045 });   // 音节间隙回落
+  }
+  installGenFrames(env, stageGen([
+    { frames: 5, rms: 0.0045 },
+    ...quietFrames,
+    { frames: 300, rms: 0.0045 },
+  ]));
+  const bridge = loadBridgeWithFloor(env, -41.4);
+  bridge.install();
+  env.document._attr = 'recording';
+  env.pump();
+  runVad(env);
+  assert.equal(env.stopButton.clicks, 1, '小声说话（2 帧连续）⇒ 测过环境时必须能判停');
+});
+
+test('OVB-FLOOR-06 未测过时起音确认仍是 3 帧（向后兼容，不因新功能放宽既有抗噪）', async () => {
+  const env = makeFakeEnv({ recordingPhase: true });
+  installGenFrames(env, stageGen([
+    { frames: 5, rms: AMB_LOW },
+    { frames: 2, rms: AMB_LOW * 6 },   // 只有 2 帧过阈
+    { frames: 400, rms: AMB_LOW },
+  ]));
+  const bridge = loadBridgeWithFloor(env, null);
+  bridge.install();
+  env.document._attr = 'recording';
+  env.pump();
+  runVad(env);
+  assert.equal(env.stopButton.clicks, 0, '未测过 ⇒ 2 帧不足以确认语音 ⇒ 不得判停（既有行为不变）');
 });
 
 test('OVB-VAD-14 取帧源单一化：官方 Recording.amplitude()（旧 float/byte 双路径已退役）', async () => {
@@ -2256,14 +2383,14 @@ async function runSwitchScenario(cfg, mutate) {
   S.voiceCfgState.value = cfg;
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require', src + '\n;return officialVoiceBridge;');
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require', src + '\n;return officialVoiceBridge;');
   let seq = 0;
   const bridge = factory(env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire);
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   env.document._attr = 'recording';
@@ -2470,7 +2597,7 @@ function runSessionScenario(mutate) {
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     src + '\n;return officialVoiceBridge;');
   let seq = 0;
   const bridge = factory(env.window, env.document, env.navigator, env.localStorage,
@@ -2478,7 +2605,7 @@ function runSessionScenario(mutate) {
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire);
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const mo = { cb: () => env.pump() };
@@ -2507,7 +2634,7 @@ test('OVB-DT-V04 变异自证·桥侧负控必绿：同一变异下「最近一�
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     src + '\n;return officialVoiceBridge;');
   let seq = 0;
   const bridge = factory(env.window, env.document, env.navigator, env.localStorage,
@@ -2515,7 +2642,7 @@ test('OVB-DT-V04 变异自证·桥侧负控必绿：同一变异下「最近一�
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire);
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, () => null, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const mo = { cb: () => env.pump() };
@@ -2780,7 +2907,7 @@ function loadMutantSrc(env, mutated) {
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'vadFloorDbOf', 'require',
     mutated + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -2789,7 +2916,7 @@ function loadMutantSrc(env, mutated) {
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
     class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire);
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, () => null, chunkRequire);
   // 与 loadBridge 同款：装载时注入假 MediaRecorder（桥的 recorder 捕获在装载期完成）
   if (env.window.MediaRecorder) new env.window.MediaRecorder(env.mediaDevices.lastStream);
   bridge.setTimer(env.timerSvc);

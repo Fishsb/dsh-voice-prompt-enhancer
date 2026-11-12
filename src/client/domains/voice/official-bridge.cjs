@@ -11,6 +11,21 @@ function createOfficialVoiceBridge(deps) {
   const voiceCfgState = d.voiceCfgState;
   const vadRequiredQuiet = d.vadRequiredQuiet;
   const vadSilenceMsOf = d.vadSilenceMsOf;
+  // 环境噪声绝对下限读取器（2026-11-12）：**就地读配置**，不依赖注入。
+  //   ⚠ 为什么不用形参注入（前两版都失败）：
+  //     · `d.vadFloorDbOf` ⇒ 测试夹具 factoryBody() 切掉了 `const d = deps` ⇒ `d is not defined`；
+  //     · factory 形参 ⇒ 生产 `app.cjs` 要记得传、测试要记得传、state chunk 里还没有该函数
+  //       ⇒ 三处都得同步，任一漏了就静默失效（与探针那次同一类事故）。
+  //   ⇒ 直接读 `voiceCfgState.value.vad.floorDb`（与 ovbVadEnabled 读 `vad.enabled` 同构，
+  //     单一事实源，无接线负担）。归一化在读取处就地做，非法值 ⇒ null。
+  const floorDbReader = (cfg) => {
+    const vd = cfg && cfg.vad && typeof cfg.vad === 'object' ? cfg.vad : null;
+    if (!vd) return null;
+    const n = typeof vd.floorDb === 'number' ? vd.floorDb : NaN;
+    if (!Number.isFinite(n)) return null;
+    if (n < -100 || n > 0) return null;
+    return n;
+  };
   // ⚠ 2026-11-12（#15 架构改向）：Recording 探针**在此处 require**。
   //   ⚠⚠ 必须写在工厂正文内，不能写在模块顶层：测试夹具 factoryBody() 只切取
   //     「工厂正文」（依赖声明之后 → return 之前），写在顶层会被切掉 ⇒ 生产有、测试无（或反之）。
@@ -109,6 +124,10 @@ const OVB_POLL_MS = 100;
 // 旧写法（已退役）：`OVB_REQUIRED_QUIET = Math.round(OVB_SILENCE_MS / OVB_POLL_MS)`。
 // 这是§7.4「静音档位驱动录音入口」的落点——若各自派生，用户改了档位会只对一条路径生效。
 const OVB_CALIBRATE_FRAMES = 5;
+// 实测下限「可信」判据：下限线性值须 ≥ 分辨率 × 该倍数，否则视为配置与本机不符（跳过依赖它的判据）。
+//   ⚠ 取 8：8-bit 分辨率 1/256 ≈ 0.0039 ⇒ 门槛 ≈ 0.031（≈ -30 dBFS）；float 分辨率 2^-15 ⇒ 门槛极低，
+//     实际只拦「配置被改成 -90 dB 之类离谱值」这一档。
+const OVB_FLOOR_CEIL_MIN_STEPS = 8;
 
 // 官方按钮的文案锚（官方 zh/en 双语；官方源码 lib/client.js:5254/5255/5358/5359 实读）
 const OVB_START_LABELS = ['开始录音', 'Start recording'];
@@ -192,6 +211,8 @@ function ovbBus() {
       vadSpeaking: false,       // 当前是否处于「说话」态（双阈值迟滞的状态机位）
       vadRms: 0,                // 本帧原始 RMS（平滑前；区分「门没开」与「没声音」的关键）
       vadSnr: 0,                // 本帧 rms / 噪声底（相对判据的比值）
+      vadDb: 0,                 // 本帧 dBFS（2026-11-12）
+      vadFloorHit: 0,           // 被绝对下限拦截的帧数（可判「第 1 层真的在工作」）
       vadThresholdOff: 0,       // 关阈（迟滞带下沿）
       vadResolution: 0,         // 当前判据下限（= 采集分辨率，随路径变）
       vadPath: '',              // 实际采集路径：'float'（getFloatTimeDomainData）| 'byte'（8-bit）
@@ -263,6 +284,8 @@ function ovbSnapshot() {
     vadFrameSpeech: !!b.vadFrameSpeech,
     vadSpeaking: !!b.vadSpeaking,
     vadRms: b.vadRms || 0,
+      vadDb: (typeof b.vadDb === 'number') ? b.vadDb : 0,
+      vadFloorHit: b.vadFloorHit || 0,
     vadSnr: (typeof b.vadSnr === 'number') ? b.vadSnr : 0,
     vadThresholdOff: b.vadThresholdOff || 0,
     vadResolution: b.vadResolution || 0,
@@ -626,6 +649,29 @@ function ovbStartVad(getAmp, onSilence) {
     //     （A2 的恒定 0.018 之所以能通过，是因为它**填满**窗口 ⇒ p20 也变高 —— 
     //      那是「真的持续了 10 s 的稳定电平」，此时判为环境在语义上是对的，
     //      而用户早已停止说话。详见 docs/internal 的方案文档「E/A2 裁决」。）
+    // 环境噪声下限 → 线性域（供噪底钳制用）。null ⇒ +∞（不钳制，行为与改前一致）。
+    //   ⚠ 用 `floorDb + 6 dB` 而不是 `floorDb` 本身：实测下限 = 环境 p95 + 5 dB，
+    //     而 p20 分位天然低于 p95 ⇒ 若直接钳到 floorDb，会把噪底抬到环境的**上沿**，
+      //     等于人为制造「环境 vs 小声说话」的误伤面。+6 dB（≈2 倍）留一倍余量，
+      //     只挡住「噪底被语音整段污染」这一类病态，不改变正常环境的相对判据。
+    const floorCeilLinear = () => {
+      const fdb = floorDbReader(voiceCfgState.value);
+      if (fdb === null) return Infinity;
+      const lin = Math.pow(10, (fdb - 5) / 20);
+      // ⚠ 可信门：下限若与本机可测分辨率同量级或更低，说明该配置不是对本机环境的有效声明
+      //   （被手改 / 换了高增益设备 / 测环境时麦克风根本没开）。此时**整层降级**（返回 Infinity，
+      //   等价于没测过），否则噪底会被钉在极低值 ⇒ 开阈低于真实环境 ⇒ 环境帧全判「有声」
+      //   ⇒ 反向锁打开且永不累计静音 ⇒ 反而更停不下来（OVB-FLOOR-03 锁这条）。
+      if (!(lin >= measurableFloor() * OVB_FLOOR_CEIL_MIN_STEPS)) return Infinity;
+      return lin;
+      // ⚠ 上界 = **环境 p95 本身**（= 下限 − 5 dB，因为下限由 `p95 + 5 dB` 定义）。
+      //   为什么不直接用下限：噪底 × 2.5 才是开阈，而「小声说话」实测仅比环境高 8.2 dB
+      //   （/tmp/quiet-speech.wav：环境 −47.3、小声 −33.0 dBFS）⇒ 若噪底 = 下限(−41.4)，
+      //   开阈 = −38.9 dBFS，只比小声语音低 4.1 dB ⇒ 小声的**起音段**（−35.9…−39.0）跨不过去
+      //   ⇒ `heardSpeech` 建立不起来 ⇒ 反向锁永不放开 ⇒ 小声说话永不判停（实测命中）。
+      //   退回 p95（−46.4 ⇒ 开阈 −43.9）后小声起音段有 8 dB 余量 ⇒ 正常判停。
+      //   仍然拦得住「噪底被语音整段污染」：污染值是 −31.7 dBFS 量级，远高于 p95。
+    };
     const trackFloor = (v, force) => {
       void force;   // 保留形参以兼容既有调用点（兜底路径已由分位本身覆盖）
       const sample = (v > measurableFloor()) ? v : measurableFloor();
@@ -633,7 +679,40 @@ function ovbStartVad(getAmp, onSilence) {
       if (quietWindow.length > OVB_NOISE_WINDOW) quietWindow.shift();
       const sorted = quietWindow.slice().sort(function (a, c) { return a - c; });
       const q = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * OVB_FLOOR_QUANTILE))];
-      noiseFloor = q;
+      // ═══════════════════════════════════════════════════════════════════════
+      // 噪底上界 = 实测环境电平（2026-11-12 · 真机「又不行了」根因 · 第 4 版）
+      // ═══════════════════════════════════════════════════════════════════════
+      // 实证链条（/tmp/quiet-speech.wav，真实录音，小声说话）：
+      //   环境 −47.3 dBFS（0.0043）｜小声语音 −33.0 dBFS（0.0224）
+      //   录音第 0.5 秒就开口 ⇒ 校准窗 5 帧**整段落在语音里** ⇒ 噪底初值 0.01294
+      //   ⇒ 开阈 0.03235 ⇒ **小声语音 0.0224 自己都过不了阈** ⇒ heardSpeech 恒 false
+      //   ⇒ 反向锁永不放开 ⇒ 无论等多久都不判停。
+      //
+      // 为什么 p20 分位救不了：分位只描述**窗口里有什么**，没有先验。用户一直小声说话时
+      //   窗口被语音帧占据 ⇒ p20 也停在语音电平 ⇒ 观察驱动的估计出不来了。
+      //
+      // ⇒ 实测下限是**唯一的外部先验**（用户点按钮时明确告知「这 3 秒是环境」）：
+      //   只要测过，噪底**不得高于环境电平**——高于它就等于「把语音当成了环境」。
+      //   环境电平 = 下限 − 5 dB（下限由 UI 的 `p95 + 5 dB` 定义，此处反解）。
+      //
+      // ⚠ 双边界（缺一即出事故，两条判据各锁一边）：
+      //   · **上界** = 环境电平：防止噪底被语音污染抬高（OVB-FLOOR-02 / 真机根因）。
+      //   · **下界** = 窗口内**低于上界**的样本的最小值：防止实测值与真实环境严重不符时
+      //     （测环境时没人说话所以采到更低 / 用户事后换设备 / 配置被手改）把噪底压到环境以下
+      //     ⇒ 开阈低于环境 ⇒ 环境帧全被判「有声」⇒ 反向锁打开且永不累计静音 ⇒ **反而更停不下来**
+      //     （OVB-FLOOR-03 / 真机另一种失效形态）。
+      //   ⚠ 下界**只从低于上界的样本取**：否则语音帧会成为「观测到的环境」，把上界顶回去
+      //     （第 3 版正是在这里翻车——`sorted[0]` 拿到的是被污染的窗）。
+      const ceiling = floorCeilLinear();
+      // 下界 = 窗口内**低于上界**的样本最小值（只看环境候选，不让语音帧顶高上界）。
+      //   若无这样的样本（上界与本机电平严重脱节）⇒ 只用上界（等价于既有行为 + 钳制）。
+      let observed = Infinity;
+      for (let i = 0; i < quietWindow.length; i++) {
+        const x = quietWindow[i];
+        if (x < ceiling && x < observed) observed = x;
+      }
+      const target = Number.isFinite(observed) ? observed : ceiling;
+      noiseFloor = (q < target) ? q : target;
       applyFloor();
     };
     // §7.4：连续静音帧数按**当前配置值**动态计算
@@ -652,6 +731,28 @@ function ovbStartVad(getAmp, onSilence) {
         frames++;
         const rms = readRms();
         if (calibrating) {
+          // ⚠ **校准取样门**（2026-11-12 · 真机「又不行了」的根因所在）：
+          //   校准窗 5 帧**不保证落在静音里**——用户按下按钮就开口是常态。
+          //   实测（/tmp/quiet-speech.wav）：0.5 s 就开口 ⇒ 5 帧全落在语音
+          //   ⇒ 噪底初值 = 语音电平（0.0129，环境只有 0.0043，高 3 倍）
+          //   ⇒ 开阈 0.0323 ⇒ **小声语音 0.0224 自己都过不了阈** ⇒ heardSpeech 恒 false
+          //   ⇒ 反向锁永不放开 ⇒ 无论等多久都不判停（用户症状的字面复现）。
+          //   ⇒ 测过环境（floorDb 非 null）时，只采信「明确低于环境电平」的帧；
+          //     若 5 帧里一帧合格都没有，退回全采（保持既有行为，不因新功能把录音搞死）。
+          const calFloor = floorCeilLinear();
+          // ⚠ 只在「下限可信」时启用门：下限若低到接近分辨率（配置被手改 / 换到高增益设备），
+          //   它就不是对本机环境的有效声明 ⇒ 门必须让位，否则噪底会被钉在上界的极低值,
+          //   开阈低于真实环境 ⇒ 环境帧全判有声 ⇒ 反而更停不下来（OVB-FLOOR-03 锁这条）。
+          //   可信判据：下限对应的线性值 ≥ 分辨率的 OVB_FLOOR_CEIL_MIN_STEPS 倍。
+          const calFloorTrusted = Number.isFinite(calFloor) && calFloor >= measurableFloor() * OVB_FLOOR_CEIL_MIN_STEPS;
+          if (calFloorTrusted && rms > calFloor) {
+            calibrating = false;   // 校准窗整段不在环境电平 ⇒ 立即出窗，交给 trackFloor 接管
+            noiseFloor = calFloor;
+            applyFloor();
+            b.vadCalibrating = false;
+            b.vadCalSkipped = (b.vadCalSkipped || 0) + 1;
+            return;
+          }
           noiseSamples.push(rms);
           b.vadFrames = frames;
           b.vadPath = 'official';
@@ -667,11 +768,49 @@ function ovbStartVad(getAmp, onSilence) {
             const sorted = noiseSamples.slice().sort(function (a, c) { return a - c; });
             const med = sorted[Math.floor(sorted.length / 2)];
             noiseFloor = (med > measurableFloor()) ? med : measurableFloor();
+            // ⚠ **校准出口也要钳**（2026-11-12 真机根因）：校准 5 帧整段落在语音里时，
+            //   中位数 = 语音电平（实测 0.026 vs 环境 0.0045，高 5.8 倍）⇒ 开阈 0.066
+            //   ⇒ 后续真实语音帧都被判「不够响」⇒ heardSpeech 永为 false ⇒ 反向锁永不放开。
+            //   有实测下限时以它为校准出口的上界（这就是「测过环境」的意义）。
+            const calCeil = floorCeilLinear();
+            if (noiseFloor > calCeil) noiseFloor = Math.max(calCeil, measurableFloor());
             applyFloor();
             b.vadCalibrating = false;
           }
           return;
         }
+        // ═══════════════════════════════════════════════════════════════════
+        // 第 1 层：**实测环境噪声绝对下限**（2026-11-12 · 用户方案）
+        // ═══════════════════════════════════════════════════════════════════
+        // 用户在设置页点「测试环境噪声」⇒ 采 3 秒 ⇒ 下限 = 实测 p95 + 5 dB。
+        //   低于该下限 ⇒ 100% 是环境噪声，直接算静音，**跳过**第 2 层相对判定。
+        //
+        // 为什么必须实测而非预设：同一句「小声说话」在不同设备上 dBFS 差可达 25 dB
+        //   （高增益 USB 麦 ≈ -15 dBFS，笔记本内置麦 ≈ -40 dBFS）⇒ 预设值必然对一半设备失效。
+        //
+        // 为什么用 dB 域：增益翻倍只是所有 dBFS 平移 6 dB，**相对差距不变** ⇒ 阈值语义跨设备一致。
+        //   （线性域的「2.5 倍」在低电平处过于严苛、高电平处过松。）
+        //
+        // ⚠ floorDb === null（未测过）⇒ 本层不生效，行为与既有完全一致（向后兼容）。
+        const floorDb = floorDbReader(voiceCfgState.value);
+        const db = 20 * Math.log10(Math.max(rms, 1e-9));
+        if (floorDb !== null && db < floorDb) {
+          // 确定是环境：不计入语音确认，直接累计静音帧（但仍需 heardSpeech 才停）。
+          aboveRun = 0;
+          if (heardSpeech) { speaking = false; quietFrames++; }
+          b.vadFloorHit = (b.vadFloorHit || 0) + 1;
+          // 环境帧仍要喂噪声底（它确实代表环境电平）。
+          trackFloor(rms, false);
+          // 出账后直接返回（跳过第 2 层与本帧其余判定）。
+          if (frames % 10 === 0) ovbNotify();
+          b.vadRms = rms; b.vadDb = db; b.vadSpeaking = speaking;
+          b.vadQuietFrames = quietFrames; b.vadNoiseFloor = noiseFloor;
+          b.vadThreshold = vadThreshold; b.vadThresholdOff = vadThresholdOff;
+          b.vadFrames = frames;
+          if (quietFrames >= requiredQuietNow()) { stopped = true; onSilence(); }
+          return;
+        }
+
         // ── 帧判定（相对量；平滑已拆除）
         const isOn = rms >= vadThreshold;
         const isOff = rms < vadThresholdOff;
@@ -683,7 +822,16 @@ function ovbStartVad(getAmp, onSilence) {
         //   为什么 3 帧（300ms）够：真实音节的有声段 100–300ms+，包络峰肩就有 3 帧；
         //     字间回落会打断连续段 ⇒ 确认只看一个音节内是否持续有声，不跨音节。
         if (isOn) aboveRun++; else aboveRun = 0;
-        if (aboveRun >= OVB_ONSET_RUN) {
+        // ⚠ **测过环境时放宽起音确认帧数**（2026-11-12 · 小声说话场景）：
+        //   `OVB_ONSET_RUN = 3`（连续 300ms 过阈）是为了在没有先验时抗噪——敲击/碰撞只有 1–2 帧。
+        //   但**小声说话**的固有形态是「音节内 2 帧 + 音节间隙回落」：实测
+        //   /tmp/quiet-speech.wav 最长连续过阈段只有 **2 帧**（正常语音 24 帧）。
+        //   ⇒ 3 帧要求会让小声说话**永远建立不了 heardSpeech** ⇒ 反向锁永不放开 ⇒ 永不判停。
+        //   测过环境后不再是「无先验」：`floorDb` 已把「明显是环境的帧」在上一层拦掉，
+        //   能走到这里的帧至少高于环境电平 ⇒ 抗噪职责已由第 1 层承担 ⇒ 起音确认降为 2 帧。
+        //   （未测过 ⇒ 保持 3 帧，行为与改前逐位一致。）
+        const onsetRun = Number.isFinite(floorCeilLinear()) ? 2 : OVB_ONSET_RUN;
+        if (aboveRun >= onsetRun) {
           // 确认到语音：门打开，静音计数清零
           heardSpeech = true;
           quietFrames = 0;
@@ -1021,6 +1169,8 @@ function installOfficialVoiceBridge() {
       vadSessionActive = true;
       const rec = res.recording;
       const getAmp = () => (typeof rec.amplitude === 'function' ? rec.amplitude() : 0);
+      // 供设置页「测试环境噪声」按钮读实时电平（2026-11-12）。
+      b._liveAmp = getAmp;
       b.callCount = (b.callCount || 0) + 1;
       b.firstCallAt = b.firstCallAt || Date.now();
       b.lastCallAt = Date.now();
@@ -1209,6 +1359,8 @@ const officialVoiceBridge = {
     ACTIVITY_ATTR: OVB_ACTIVITY_ATTR,
     FEEDBACK_PHASE: OVB_FEEDBACK_PHASE,
     RECORDING_PHASE: OVB_RECORDING_PHASE,
+    // 设置页「测试环境噪声」用的实时电平读取器；无活动会话时返回 null。
+    amplitudeNow: () => (typeof b._liveAmp === 'function' ? b._liveAmp() : null),
     bus: ovbBus,
     findStartButton: ovbFindStartButton,
     findRetryButton: ovbFindRetryButton,

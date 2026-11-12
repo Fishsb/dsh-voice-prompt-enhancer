@@ -59,6 +59,7 @@ function createClientApp(deps) {
   const officialVoiceBridge = createOfficialVoiceBridge({
     window: d.window, document: d.document, navigator: d.navigator, MutationObserver: d.MutationObserver,
     voiceCfgState, vadRequiredQuiet: voiceApi.vadRequiredQuiet, vadSilenceMsOf: voiceApi.vadSilenceMsOf,
+    vadFloorDbOf: voiceApi.vadFloorDbOf,
   });
   const CollapsibleSection = createCollapsibleSection({ React: d.React, dshEnhId: helpers.dshEnhId });
   const MarqueeSelect = createMarqueeSelect({ React: d.React, window: d.window, document: d.document });
@@ -66,6 +67,7 @@ function createClientApp(deps) {
     React: d.React, makeT: helpers.makeT, host: d.host, voiceCfgState,
     subscribeVoiceConfig: voiceApi.subscribeVoiceConfig, saveVoiceCfg: voiceApi.saveVoiceCfg,
     syncVoiceFromHost: voiceApi.syncVoiceFromHost, vadSilenceMsOf: voiceApi.vadSilenceMsOf,
+    vadFloorDbOf: voiceApi.vadFloorDbOf,
     normalizeVadSilenceMs: voiceApi.normalizeVadSilenceMs, rpcMethods: contracts.RPC_METHODS, CollapsibleSection, officialVoiceBridge,
     // UD-0052（2026-11-08）：自动增强档位候选 = 契约模式五值（名称走既有 `modeLabel*` 键）。
     MODE_VALUES: shared.MODE_VALUES,
