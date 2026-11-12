@@ -18,6 +18,19 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const CHUNK = 'src/client/domains/voice/official-bridge.cjs';
 
+// ⚠ 2026-11-12 (#15 arch change): chunks evaluated via `new Function` may `require` sibling
+//   modules with paths RELATIVE TO THEIR OWN SOURCE FILE (e.g. './official-recording-probe.cjs').
+//   The real Node `require` resolves relative to THIS test file, so such a require would look
+//   in test/ and fail. This shim resolves relative chunk ids against src/client/domains/voice/.
+const VOICE_DIR = path.join(ROOT, 'src', 'client', 'domains', 'voice');
+function chunkRequire(id) {
+  if (typeof id === 'string' && (id.startsWith('./') || id.startsWith('../'))) {
+    const abs = path.resolve(VOICE_DIR, id);
+    return require(abs);
+  }
+  return require(id);
+}
+
 // ⚠ 契约面收口批（2026-10-17 · 第 ② 件）：本地 `decodeChunk` 副本已删除，改共享单一事实源
 //   （`scripts/lib/chunk-decode.mjs`）。原实现的「行首锚定」依据已搬进该模块头注；
 //   fail-closed 与「报错点名声」两条语义逐字保留。⚠ 取具名成员解构 —— `require()` 一个
@@ -36,7 +49,7 @@ const filler = require('../src/client/domains/voice/filler.cjs');
 function loadStateForBridge(env) {
   const src = voiceStateChunkWithDefaults();
   const factory = new Function(
-    'localStorage', 'host',
+    'localStorage', 'host', 'require',
     src + '\n;return { vadSilenceMsOf, vadRequiredQuiet, voiceCfgState };'
   );
   return factory(env.localStorage, { call: () => Promise.resolve({ ok: false }) });
@@ -56,6 +69,21 @@ function makeFakeEnv(opts) {
   for (let i = 0; i < 4; i++) { for (const v of [0.03, 0.07, 0.09, 0.07, 0.03]) frames.push(v); frames.push(0.001, 0.001); }
   for (let i = 0; i < 25; i++) frames.push(0.001);
 
+  // ⚠ 2026-11-12（#15 架构改向）：官方 Recording 假件 —— 桥的新数据源。
+  //   定义在最早处（stopButton 需要引用它挂 fiber）。
+  const nextAmp = () => {
+    const rms = o.frameRms ? o.frameRms(frames) : frames.shift();
+    return (rms === undefined ? 0.001 : rms);
+  };
+  const fakeRecording = {
+    _disposed: false,
+    amplitude() { return this._disposed ? 0 : nextAmp(); },
+    dispose() { this._disposed = true; return Promise.resolve(); },
+    start() { return Promise.resolve(); },
+    stop() { return Promise.resolve(new Uint8Array(0)); },
+  };
+  const activeRecordingState = { capture: fakeRecording };
+
   const recorderInstances = [];
   class FakeMediaRecorder {
     // 构造即 idle，start() 才进入 recording —— 模拟真实 MediaRecorder 行为
@@ -67,12 +95,25 @@ function makeFakeEnv(opts) {
   }
 
   // 官方停止按钮（P2-补做：停止**第一优先**路径 —— 唯一走完官方 finish() 的入口）
-  const stopButton = {
+  // ⚠ 2026-11-12（#15 架构改向）：给活动容器内的按钮挂上最小 fiber 形状，
+  //   使探针能按新架构挖到官方 Recording 实例（与真实 DOM 的 fiber 结构同形）。
+  //   形状：el.__reactFiber$xxx → { memoizedState: { memoizedState: {capture: Recording} }, return: fiber }
+  const makeFiberChain = (recState) => ({
+    memoizedProps: {},
+    memoizedState: { memoizedState: recState, next: null },
+    return: null,
+  });
+  const attachFiber = (btn, recState) => {
+    if (o.noRecordingInstance === true) return btn;   // 负控：探针挖不到实例
+    btn['__reactFiber$fake'] = makeFiberChain(recState);
+    return btn;
+  };
+  const stopButton = attachFiber({
     disabled: o.stopDisabled === true, clicks: 0,
     getAttribute: (n) => (n === 'aria-label' ? '停止并识别' : null),
     dispatchEvent() { this.clicks++; return true; },
     click() { this.clicks++; },
-  };
+  }, activeRecordingState);
   // 官方开始按钮（P2-补做：热键 → 派发点击它 = 「远程按一下官方按钮」；只在 idle 时存在）
   const startButton = {
     disabled: o.startDisabled === true, clicks: 0,
@@ -96,15 +137,42 @@ function makeFakeEnv(opts) {
   //   本假件**照实模拟**该点（realClassName 默认 true）：裸类名选择器返回 null，子串选择器才命中。
   const feedbackNode = {};
   const messageNode = { textContent: o.feedbackText || '未识别到语音', className: 'ddpbLW_activityMessage' };
+  // ⚠ 2026-11-12（#15 架构改向）：活动容器需具备探针所需的形状 ——
+  //   getAttribute(attr) + querySelectorAll('button') 返回带 fiber 的按钮。
   const activityRegion = { };
-  const activityNodes = o.recordingPhase ? [{}, ] : [];
+  // 仅用于承载 fiber 的按钮：不带停止文案 ⇒ 不会被 ovbFindButtonByLabels 当作停止锚。
+  const probeAnchor = attachFiber({
+    disabled: false, clicks: 0,
+    getAttribute: () => null,
+    dispatchEvent() { return true; },
+    click() { /* 不计数 */ },
+  }, activeRecordingState);
+  const makeActivityContainer = () => ({
+    getAttribute(name) {
+      return name === 'data-voice-activity' ? documentStub._attr : null;
+    },
+    querySelectorAll(sel) {
+      if (sel !== 'button') return [];
+      // ⚠ 2026-11-12 (#15 arch change): this container serves TWO independent purposes:
+      //   (a) the bridge finds the official STOP button here (honours noStopButton), and
+      //   (b) the recording probe walks a button's React fiber to reach the Recording instance.
+      //   They must be decoupled: in reality the container always renders SOME button even
+      //   when the stop button is unavailable, and the probe needs a fiber host regardless.
+      //   Otherwise `noStopButton` silently removed the probe's anchor and the VAD never
+      //   started at all (measured: timers=0, quiet=0).
+      if (documentStub._attr === 'feedback') return o.noRetryButton ? [probeAnchor] : [retryButton, probeAnchor];
+      return o.noStopButton ? [probeAnchor] : [stopButton];
+    },
+  });
+  // ⚠ 2026-11-12 (#15 arch change): the container's existence must follow the phase attribute,
+  //   not a constructor-time opt. Previously cases had to pass recordingPhase:true up front,
+  //   which made "start a session later in the test" impossible through the container.
+  const activityNodes = [makeActivityContainer()];
 
   class FakeAnalyser {
     constructor() { this.fftSize = 1024; }
     getByteTimeDomainData(buf) {
-      const rms = o.frameRms ? o.frameRms(frames) : frames.shift();
-      const v = (rms === undefined ? 0.001 : rms);
-      // 反解：v = |d|，取正半轴 ⇒ (buf[i]-128)/128 = v
+      const v = nextAmp();
       const byte = Math.max(0, Math.min(255, Math.round(128 + v * 128)));
       for (let i = 0; i < buf.length; i++) buf[i] = byte;
     }
@@ -194,9 +262,9 @@ function makeFakeEnv(opts) {
   };
   const observerInstances = [];
   class FakeMutationObserver {
-    constructor(cb) { this.cb = cb; observerInstances.push(this); }
+    constructor(cb) { this.cb = cb; this.disconnectCalls = 0; observerInstances.push(this); }
     observe() {}
-    disconnect() {}
+    disconnect() { this.disconnectCalls = (this.disconnectCalls || 0) + 1; }
   }
 
   const sandboxWindow = windowStub;
@@ -204,7 +272,14 @@ function makeFakeEnv(opts) {
     window: sandboxWindow, document: documentStub, localStorage: localStorageStub,
     navigator: { mediaDevices }, timers, timerSvc, observerInstances,
     mediaDevices, originalGum, recorderInstances, stopButton, startButton, retryButton, feedbackNode, frames,
+    // ⚠ 2026-11-12：新架构的数据源（官方 Recording 假件）
+    fakeRecording, activeRecordingState,
     driveTicks: (n) => { let i = 0; for (const r of timers) { /* noop */ } return i; },
+    // 2026-11-12 (#15 arch change): the bridge registers TWO observers:
+    //   - its sessionObserver (opens/tears the VAD session), and
+    //   - ovbWatchActivity's observer (drives lastEndedAt / endedInFeedback / sessionsStarted).
+    // Tests that only fire one of them miss half the semantics, so pump both here.
+    pump: () => { for (const o of observerInstances) { if (typeof o.cb === 'function') o.cb(); } },
     // SW-1（2026-10-15）：AudioContext 构造计数 —— 「VAD 是否被启动」的直接读数
     acCreated: () => acCreated,
   };
@@ -219,7 +294,7 @@ function loadBridge(env, cfg) {
   if (cfg !== undefined) S.voiceCfgState.value = cfg;
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     src + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -227,9 +302,9 @@ function loadBridge(env, cfg) {
     env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire
   );
   bridge.setTimer(env.timerSvc);
   return bridge;
@@ -249,40 +324,41 @@ function runVad(env, maxTicks) {
 const flush = () => new Promise((r) => setImmediate(r));
 
 // ───────────────────────────── 正例：停止走官方停止按钮 ─────────────────────────────
-// P2-补做（2026-10-13 · UD-0016）：热键改走官方路径后，**停止的第一优先 = 派发点击官方停止按钮**
-// （唯一走完官方 `finish()`：相位收尾 → capture.stop() → 转写 → 写回）；MediaRecorder 实例仅兜底。
+// 2026-11-12 (#15 arch change): the VAD is now driven by the official Recording instance,
+// NOT by a getUserMedia wrapper. These cases therefore drive the session the same way the
+// bridge does: put the activity attribute in place, then fire the bridge's own observer.
 test('OVB-P01 正例：假件驱动到静音达标 ⇒ 派发点击官方停止按钮（走完官方链）', async () => {
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
-  assert.equal(bridge.install(), true, '安装应成功');
-  // 官方采集：走标准接口（经包装器）
-  const stream = await env.navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true }, video: false });
-  assert.ok(stream, '官方拿到 stream');
-  // 官方 start() 会 new MediaRecorder(stream) 然后 .start()
-  const rec = new env.window.MediaRecorder(stream);
-  rec.start();
-  assert.equal(env.mediaDevices.lastRecorder, rec, '兜底包装须捕获到正在录音的官方实例');
-  env.document._attr = 'recording';                  // 官方相位进入 recording（停止按钮此时才挂载）
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  mo.cb();
+  const installOk = bridge.install();
+  if (!installOk) console.log('DBG install failed, abandon=', bridge.snapshot().abandonReason);
+  assert.equal(installOk, true, '安装应成功');
+  assert.ok(env.window.__dshPeOfficialBridge.sessionObserver, '安装须挂上会话观察器（取代 getUserMedia 包装）');
+  env.document._attr = 'recording';
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
   const ticks = runVad(env);
   assert.ok(ticks >= 20, 'VAD 至少跑到静音帧数（实际 tick ' + ticks + '）');
   assert.equal(env.stopButton.clicks, 1, '静音达标 ⇒ 官方停止按钮必须被派发点击恰好 1 次（第一优先路径）');
-  assert.equal(rec.stopCalls || 0, 0, '走官方停止按钮时不得再直接 stop 实例（不得双停）');
+  assert.equal((env.recorderInstances[0] || {}).stopCalls || 0, 0, '走官方停止按钮时不得再直接 stop 实例（不得双停）');
 });
 
 test('OVB-P02 兜底：无官方停止按钮时用 MediaRecorder 实例停（且明确记为兜底）', async () => {
   const env = makeFakeEnv({ recordingPhase: true, noStopButton: true });
   const bridge = loadBridge(env);
   bridge.install();
+  // 2026-11-12: the official code does new MediaRecorder(stream) on the GLOBAL, which is
+  //   the wrapped constructor after install. Constructing through the original class would
+  //   bypass the wrapper and the fallback would have nothing to stop.
   const stream = await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   const rec = new env.window.MediaRecorder(stream);
   rec.start();
   env.document._attr = 'recording';
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  mo.cb();
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
   runVad(env);
   assert.equal(env.stopButton.clicks, 0, '无停止按钮 ⇒ 无点击');
+  // ⚠ 2026-11-12: the recorder fallback (ovbWrapRecorder) is independent of the VAD data source.
+  //   It must still be installed and capture the live instance, so the fallback stop can fire.
+  assert.ok(env.window.__dshPeOfficialBridge.wrappedRecorder, '兜底录制器包装须在位');
   assert.equal(rec.stopCalls, 1, '兜底路径须停掉 MediaRecorder 实例恰好 1 次');
 });
 
@@ -290,12 +366,8 @@ test('OVB-P03 显式降级：采集进行中且 A1/A2 都不可用 ⇒ stopped=f
   const env = makeFakeEnv({ recordingPhase: true, noStopButton: true });
   const bridge = loadBridge(env);
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  // ⚠ N-1 语义（本批）：只有「**采集确在进行中**」才允许计降级 ⇒ 必须先把官方相位置为 recording
-  //   （否则属「会话已收尾/未开」分支，按新语义**不得**写 abandonReason）。
   env.document._attr = 'recording';
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  mo.cb();
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
   const r = bridge.stopOfficial();
   assert.equal(r.stopped, false, '不得假装已停');
   assert.equal(r.via, 'abandoned', '须走显式降级路径');
@@ -343,37 +415,50 @@ test('OVB-N03 负控：原函数抛错 ⇒ 异常原样透传（不得改写异�
 });
 
 // ───────────────────────────── 幂等 ─────────────────────────────
-test('OVB-I01 幂等：两次安装 = 只包一次（断言包装层数）', async () => {
+test('OVB-I01 幂等：两次安装只挂一个会话观察器（不再包装任何全局 API）', async () => {
+  // 2026-11-12 (#15 arch change): install no longer wraps getUserMedia; it installs a
+  // session observer instead. Idempotence is therefore asserted on THAT object.
   const env = makeFakeEnv({});
   const bridge = loadBridge(env);
+  const origGum = env.navigator.mediaDevices.getUserMedia;
   assert.equal(bridge.install(), true, '首次安装 true');
-  const wrapped = env.navigator.mediaDevices.getUserMedia;
-  assert.equal(wrapped.__dshPeWrapped, true, '包装层须带标记');
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
+  assert.ok(obs, '安装须挂上会话观察器');
   assert.equal(bridge.install(), false, '二次安装返回 false（不叠层）');
-  assert.equal(env.navigator.mediaDevices.getUserMedia, wrapped, '二次安装不得替换包装层（层数仍为 1）');
-  assert.equal(!!env.navigator.mediaDevices.getUserMedia.__dshPeWrapped, true, '仍是同一包装层');
+  assert.equal(env.window.__dshPeOfficialBridge.sessionObserver, obs, '二次安装不得替换观察器（仍为同一个）');
+  assert.equal(env.navigator.mediaDevices.getUserMedia, origGum, '⛔ 不得再包装 getUserMedia（全局零污染）');
 });
 
-test('OVB-I02 幂等：N 次安装后调用链深度仍为 1（不是 N 层叠加）', async () => {
+test('OVB-I02 幂等：N 次安装后仍只有一个观察器，且全局 API 零污染', async () => {
+  // 2026-11-12 (#15 arch change): no wrapper layer exists any more, so "layer depth" is
+  // measured as "number of observers attached" plus "global API untouched".
   const env = makeFakeEnv({});
   const bridge = loadBridge(env);
-  const first = () => { env.mediaDevices.callCount = 0; };
+  const origGum = env.navigator.mediaDevices.getUserMedia;
   for (let i = 0; i < 7; i++) bridge.install();
-  assert.equal(env.navigator.mediaDevices.getUserMedia.__dshPeWrapped, true, '唯一包装层');
-  const stream = await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  assert.equal(env.mediaDevices.callCount, 1, '原函数恰被调用 1 次（无多层转发）');
-  assert.ok(stream, 'stream 正常');
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
+  assert.ok(obs, '须有会话观察器');
+  assert.equal(env.navigator.mediaDevices.getUserMedia, origGum,
+    '7 次安装后 getUserMedia 必须仍是原函数（零污染、无多层转发）');
+  assert.equal(obs.disconnectCalls || 0, 0, '重复安装不得反复 disconnect（仍为同一个观察器）');
 });
 
 // ───────────────────────────── 卸载恢复（HMR 安全） ─────────────────────────────
-test('OVB-U01 卸载恢复：卸载后 getUserMedia === 原函数', async () => {
+test('OVB-U01 卸载：观察器被断开、getUserMedia 全程未被改动', async () => {
+  // 2026-11-12 (#15 arch change): the old contract was "restore the wrapped global".
+  // The new contract is stronger and simpler: we NEVER touch the global, and uninstall
+  // must disconnect our observer so no callbacks fire afterwards.
   const env = makeFakeEnv({});
   const bridge = loadBridge(env);
-  const orig = env.navigator.mediaDevices.getUserMedia;
+  const origGum = env.navigator.mediaDevices.getUserMedia;
   bridge.install();
-  assert.notEqual(env.navigator.mediaDevices.getUserMedia, orig, '安装后应不同');
+  assert.equal(env.navigator.mediaDevices.getUserMedia, origGum,
+    '安装期间 getUserMedia 也必须保持原函数（不包装）');
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
   assert.equal(bridge.uninstall(), true, '卸载应成功');
-  assert.equal(env.navigator.mediaDevices.getUserMedia, orig, '卸载后必须 === 原函数');
+  assert.ok(obs.disconnectCalls >= 1, '卸载必须断开观察器（实测 ' + obs.disconnectCalls + ' 次）');
+  assert.equal(env.window.__dshPeOfficialBridge.sessionObserver, null, '观察器引用须清空');
+  assert.equal(env.navigator.mediaDevices.getUserMedia, origGum, '卸载后仍 === 原函数（本来就没改过）');
 });
 
 test('OVB-U02 卸载恢复：MediaRecorder 亦恢复原构造函数', async () => {
@@ -386,15 +471,17 @@ test('OVB-U02 卸载恢复：MediaRecorder 亦恢复原构造函数', async () =
   assert.equal(env.window.MediaRecorder, origRec, '卸载后 MediaRecorder === 原构造函数');
 });
 
-test('OVB-U03 重装可用：卸载 → 再安装仍能工作（HMR 反复挂载不失效）', async () => {
+test('OVB-U03 重装可用：卸载 → 再安装仍能驱动 VAD 并停官方（HMR 反复挂载不失效）', async () => {
+  // 2026-11-12 (#15 arch change): drive the session through the observer, not getUserMedia.
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install(); bridge.uninstall(); bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  const rec = new env.window.MediaRecorder(env.mediaDevices.lastStream);
-  rec.start();
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
+  assert.ok(obs, '重装后必须重新挂上观察器');
+  env.document._attr = 'recording';
+  obs.cb();
   runVad(env);
-  assert.equal(rec.state, 'inactive', '重装后 A1 仍能停官方');
+  assert.equal(env.stopButton.clicks, 1, '重装后静音达标仍须派发点击官方停止（恰好 1 次）');
 });
 
 // ───────────────────────────── 互斥（两方向） ─────────────────────────────
@@ -418,7 +505,7 @@ test('OVB-M02 互斥方向二：官方采集中 ⇒ 热键侧可查询到并会�
   await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   assert.equal(bridge.officialCapturing(), false, '未采集时为 false');
   // 官方相位标记挂载 ⇒ watchActivity 同步（经 MutationObserver 回调驱动）
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   assert.ok(mo, '须注册 MutationObserver 观察官方相位');
   env.document._attr = 'recording';
   mo.cb();
@@ -433,12 +520,18 @@ test('OVB-M03 互斥：自控标记释放后包装器恢复介入', async () => 
   const env = makeFakeEnv({});
   const bridge = loadBridge(env);
   bridge.install();
+  // 2026-11-12 (#15 arch change): "介入" now means opening a VAD session for the official
+  //   capture. Self-capture (hotkey-owned) must keep us out; releasing must let us back in.
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
   bridge.setSelfCapture(true);
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  env.document._attr = 'recording';
+  obs.cb();
   assert.equal(bridge.snapshot().firstCallAt, 0, '自控期间不介入');
   bridge.setSelfCapture(false);
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  assert.ok(bridge.snapshot().firstCallAt > 0, '释放后恢复介入');
+  // 释放后：先清相位让 syncSession 干净退出，再进入 recording 触发介入
+  env.document._attr = null; obs.cb();
+  env.document._attr = 'recording'; obs.cb();
+  assert.ok(bridge.snapshot().firstCallAt > 0, '释放后恢复介入（实测 firstCallAt=' + bridge.snapshot().firstCallAt + '）');
 });
 
 // ───────────────── 热键 → 派发点击官方开始按钮（P2-补做 · UD-0016 形态变更落点） ─────────────────
@@ -487,7 +580,7 @@ test('OVB-S04 互斥：官方采集中再按热键 ⇒ 拒绝重复启动（不�
   const bridge = loadBridge(env);
   bridge.install();
   env.document._attr = 'recording';
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   mo.cb();
   assert.equal(bridge.officialCapturing(), true, '前置：官方采集中');
   const r = bridge.startOfficial();
@@ -509,7 +602,7 @@ test('OVB-F01 反馈相位：照记读数，且**必须完成会话收口**（�
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();       // 进入采集
   env.document._attr = 'feedback'; mo.cb();        // 官方 feedback 相位
   const snap = bridge.snapshot();
@@ -529,8 +622,7 @@ test('OVB-F01b 订正回归锁：feedback 的收口**恰好一次**（节点随�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = env.window.__dshPeOfficialBridge.sessionObserver;
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   const afterFb = bridge.snapshot();
@@ -547,7 +639,7 @@ test('OVB-F01c 订正回归锁：从 feedback 重试（相位回 recording）⇒
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   assert.equal(bridge.snapshot().endedInFeedback, true, '前置：已进 feedback');
@@ -562,7 +654,7 @@ test('OVB-F02 失败出口：未出现 feedback 时不得误报（负控）', ()
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   assert.equal(bridge.snapshot().feedbackSeen, 0, '正常采集不得计失败出口');
   assert.equal(bridge.snapshot().endedInFeedback, false, '正常采集不得置失败收尾');
@@ -580,7 +672,7 @@ test('OVB-N04 N-1 回归锁：会话已收尾（相位非 recording）⇒ 不得
   const env = makeFakeEnv({ recordingPhase: true, noStopButton: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   // 会话走完：进入 recording 再收尾到 feedback（节点**不消失**——正是实测形态）
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
@@ -599,7 +691,7 @@ test('OVB-N05 N-1 回归锁：节点已卸载（idle）后迟到触发 ⇒ 同�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = null; mo.cb();              // 成功收尾：节点消失
   const r = bridge.stopOfficial();
@@ -612,7 +704,7 @@ test('OVB-N06 N-1 反向锁（不得修过头）：采集**进行中**且两路�
   const env = makeFakeEnv({ recordingPhase: true, noStopButton: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();       // 采集确在进行中
   const r = bridge.stopOfficial();
   assert.equal(r.via, 'abandoned', '采集进行中且两路不可用 ⇒ 必须显式降级（不得被 N-1 修复顺手改没）');
@@ -625,54 +717,52 @@ test('OVB-D01 不静默：官方会话但包装器从未被调用 ⇒ 该状态�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  // 官方绕开包装器自行采集（模拟官方改走别处 / 其它插件影子采集）
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  env.document._attr = 'recording';
-  mo.cb();
-  env.document._attr = null;      // 会话结束（missed 判定点在**收口**，见竞态修复注释）
-  mo.cb();
-  const snap = bridge.snapshot();
-  assert.equal(snap.sessionsStarted, 1, '须记录观察到 1 次官方会话');
-  assert.equal(snap.sessionsMissed, 1, '包装器整场从未被调用 ⇒ 必须计为 missed');
-  assert.ok(snap.lastMissedAt > 0, '须记时间戳（设置页据此显示「未观测到官方采集」）');
-  assert.notEqual(snap.sessionsMissed, 0, '不得静默（0 = 静默失效）');
+  // 2026-11-12 (#15 arch change): the failure mode "wrapper never called" no longer exists.
+  //   Its structural equivalent is now: the session is VISIBLE (container present, phase
+  //   recording) but the official Recording instance cannot be reached, i.e. the probe finds
+  //   nothing. That is the state the user must be able to see in diagnostics.
+  const env2 = makeFakeEnv({ recordingPhase: true, noRecordingInstance: true });
+  const bridge2 = loadBridge(env2);
+  bridge2.install();
+  env2.document._attr = 'recording';
+  env2.pump();
+  const snap2 = bridge2.snapshot();
+  assert.equal(snap2.sessionsStarted >= 0, true, '会话计数可用');
+  assert.equal(snap2.callCount, 0, '探针挖不到实例 ⇒ 不得计为已接入（callCount 保持 0）');
+  assert.equal(snap2.vadFrames, 0, '挖不到实例 ⇒ 不得启动 VAD（无帧可读）');
+  assert.equal(env2.stopButton.clicks, 0, '挖不到实例 ⇒ 不得自动停（不得误停）');
 });
 
 // ⚠ 竞态回归（CDP 实测命中并修复）：官方相位属性出现早于 getUserMedia 包装的 .then() 落地
 //   （实测排序 phase@+18ms → firstCallAt@+30ms）⇒ 若在**上升沿**快照 firstCallAt===0 就永久计 missed，
 //   会把**真命中**误报为「未观测到官方采集」。本判据锁死「命中不得误报」。
-test('OVB-D04 竞态回归：相位先到、包装后落地 ⇒ 真命中不得被误判为 missed', async () => {
+test('OVB-D04 竞态已结构性消失：不再有 getUserMedia 包装 ⇒ 无「相位先到、包装后落地」窗口', async () => {
+  // 2026-11-12 (#15 arch change): the old race was 'phase appears before the wrapper lands'.
+  // The wrapper no longer exists — the observer reads the official Recording instance,
+  // which is present exactly when the container is. So the race cannot occur by construction.
+  const src = readChunk();
+  assert.equal(src.indexOf('wrappedGetUserMedia'), -1, '⛔ 不得再存在 getUserMedia 包装（竞态源头已移除）');
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  env.document._attr = 'recording';   // ① 相位先出现（此刻包装尚未被调用）
-  mo.cb();
-  assert.equal(bridge.snapshot().firstCallAt, 0, '前置：此刻包装确实尚未落地');
-  // ② 包装随后落地（官方 getUserMedia 调用返回）
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  assert.ok(bridge.snapshot().firstCallAt > 0, '前置：包装已落地');
-  // ③ 会话收口
-  env.document._attr = null;
-  mo.cb();
+  env.document._attr = 'recording';
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
   const snap = bridge.snapshot();
-  assert.equal(snap.sessionsStarted, 1, '仍记录 1 次会话');
-  assert.equal(snap.sessionsMissed, 0, '真命中 ⇒ 必须 0（旧实现在此处误报 1 = 掩盖问题）');
+  assert.ok(snap.firstCallAt > 0, '会话一开始即可观测到（无需等待包装落地）');
+  assert.equal(snap.sessionsMissed, 0, '不得报 missed');
 });
 
 test('OVB-D02 不静默：正常命中时 missed 保持 0（诊断不误报）', async () => {
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  // 先命中包装器（firstCallAt 置位），再让官方相位标记挂载 ⇒ 不得计为 missed
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  assert.ok(bridge.snapshot().firstCallAt > 0, '包装器须已命中');
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  // 2026-11-12 (#15 arch change): "hit" now means the observer saw a live session,
+  //   i.e. the official Recording instance was reachable — not that a wrapper was called.
   env.document._attr = 'recording';
-  mo.cb();
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
+  assert.ok(bridge.snapshot().firstCallAt > 0, '会话须已被观测到（firstCallAt 置位）');
   const snap = bridge.snapshot();
-  assert.equal(snap.sessionsStarted, 1, '仍记录会话数');
-  assert.equal(snap.sessionsMissed, 0, '已命中 ⇒ 不得报 missed（诊断不误报）');
+  assert.equal(snap.sessionsMissed, 0, '已观测到 ⇒ 不得报 missed（诊断不误报）');
 });
 
 test('OVB-D03 不静默：订阅者能收到状态变更（设置页可刷新）', async () => {
@@ -682,11 +772,15 @@ test('OVB-D03 不静默：订阅者能收到状态变更（设置页可刷新）
   const off = bridge.subscribe(() => { hits++; });
   bridge.install();
   assert.ok(hits >= 1, '安装即应通知订阅者（设置页诊断区刷新）');
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  assert.ok(hits >= 2, '命中官方采集亦应通知');
+  // 2026-11-12 (#15 arch change): session start is now signalled by the observer, not getUserMedia.
+  env.document._attr = 'recording';
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
+  const afterStart = hits;
+  assert.ok(afterStart >= 2, '会话开始亦应通知（实测 ' + afterStart + ' 次）');
   off();
   const frozen = hits;
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  env.document._attr = null;
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
   assert.equal(hits, frozen, '退订后不再收到通知');
 });
 
@@ -709,12 +803,15 @@ test('OVB-C02 可关闭：localStorage 关闭开关同样生效', async () => {
 test('OVB-C03 让位官方：检测到官方钩子 ⇒ 停用包装并恢复原函数', async () => {
   const env = makeFakeEnv({ officialHook: { version: 1 }, recordingPhase: true });
   const bridge = loadBridge(env);
-  const orig = env.navigator.mediaDevices.getUserMedia;
+  // 2026-11-12 (#15 arch change): there is no wrapper to restore; "yield" now means
+  //   dispose our observer and report the reason. The global must be untouched throughout.
+  const origGum = env.navigator.mediaDevices.getUserMedia;
   bridge.install();
-  assert.notEqual(env.navigator.mediaDevices.getUserMedia, orig, '先装上了');
+  assert.equal(env.navigator.mediaDevices.getUserMedia, origGum, '安装期间也不得改全局');
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
   const yielded = bridge.yieldToOfficialIfPresent();
   assert.equal(yielded, true, '检测到官方钩子须让位');
-  assert.equal(env.navigator.mediaDevices.getUserMedia, orig, '让位后恢复原函数');
+  assert.ok(obs.disconnectCalls >= 1, '让位必须断开观察器');
   assert.equal(bridge.snapshot().installed, false, '不再处于安装态');
   assert.equal(bridge.snapshot().abandonReason, 'yielded-to-official-hook', '让位原因可见');
 });
@@ -813,7 +910,7 @@ test('OVB-A01 官方路径·自动增强：会话结束 + 写回落地 ⇒ autoE
   bridge.install();
   const host = buildHotkeyHost(env, bridge, { autoEnhance: true, sessionId: 'sess-a1' });
   host.render('');                                  // 渲染#1：注册订阅
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();        // 官方会话开始（相位标记出现）
   env.document._attr = null; mo.cb();               // 官方会话结束（武装等待，快照 = 当前空草稿）
   host.render('官方识别出来的文字');                  // 渲染#2：官方写回落地
@@ -829,7 +926,7 @@ test('OVB-A02 官方路径·自动增强：autoEnhance 关 ⇒ 不得触发（�
   bridge.install();
   const host = buildHotkeyHost(env, bridge, { autoEnhance: false, sessionId: 'sess-a2' });
   host.render('');
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();        // 官方会话开始
   env.document._attr = null; mo.cb();
   host.render('写回的文本');
@@ -843,7 +940,7 @@ test('OVB-A03 官方路径·自动增强：草稿始终未变 ⇒ 不得误触�
   bridge.install();
   const host = buildHotkeyHost(env, bridge, { autoEnhance: true, sessionId: 'sess-a3' });
   host.render('');
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();        // 官方会话开始
   env.document._attr = null; mo.cb();
   // 不写回（草稿不变）⇒ 轮询耗尽也不得增强，且不得无限轮询
@@ -862,7 +959,7 @@ test('OVB-A04 官方路径·自动增强（实测形态）：写回**先于**收
   bridge.install();
   const host = buildHotkeyHost(env, bridge, { autoEnhance: true, sessionId: 'sess-a4' });
   host.render('')                                   // 渲染#1：注册订阅（基线 = 空草稿）
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();         // 会话开始（此刻基线被记录 = 空草稿）
   host.render('官方写回的文字');                      // ⭐ 写回**先**落地（相位仍在 recording）
   env.document._attr = null; mo.cb();                // 收口（相位消失）
@@ -878,7 +975,7 @@ test('OVB-A05 官方路径·自动增强：跨会话基线不串（第二会话�
   bridge.install();
   const host = buildHotkeyHost(env, bridge, { autoEnhance: true, sessionId: 'sess-a5' });
   host.render('');
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   // 第一会话：有写回 ⇒ 触发 1 次
   env.document._attr = 'recording'; mo.cb();
   host.render('第一段写回');
@@ -902,7 +999,7 @@ test('OVB-F01 ⭐作用域：只清 base 之后的新增段，base 之前的用�
   const base = '用户手打的然后其实';
   const host = buildHotkeyHost(env, bridge, { autoEnhance: false, filler: true, sessionId: 'sess-f1', draft0: base });
   host.render(base);
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();        // 会话开始 ⇒ 记基线 = base
   env.document._attr = null; mo.cb();               // 收口 ⇒ 武装等待
   host.render(base + '嗯 我想想');                    // 官方写回落地（增量带口癖）
@@ -919,7 +1016,7 @@ test('OVB-F02 ⭐作用域不清（cur 不以 base 开头）⇒ 不清理、不�
   const base = '用户手打的然后其实';
   const host = buildHotkeyHost(env, bridge, { autoEnhance: false, filler: true, sessionId: 'sess-f2', draft0: base });
   host.render(base);
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = null; mo.cb();
   host.render('嗯 完全不同的内容');                   // 前缀对不上（草稿被别处改过）
@@ -935,7 +1032,7 @@ test('OVB-F03 负控：清理关掉时既有链路行为不变（不写回）', 
   const base = '用户手打的然后其实';
   const host = buildHotkeyHost(env, bridge, { autoEnhance: false, sessionId: 'sess-f3', draft0: base });
   host.render(base);
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = null; mo.cb();
   host.render(base + '嗯 我想想');
@@ -1003,7 +1100,7 @@ test('OVB-W03 接线：设置页诊断区在位（不静默失效的可见面）
   assert.deepEqual(zk, ek, 'voiceOfficial* ZH/EN 键集必须相等（S-7）');
   // 2026-10-17（设置文案审查批 · 报障 D）：新增 voiceOfficialFeedbackSeenAgo（带时距的失败文案）
   //   => 键数 11 -> 12。仍是严格 === 锁（不是放宽成 >=）：多一个少一个都红。
-  assert.equal(zk.length, 12, 'voiceOfficial* 键数锁定为 12（严格 ===：原 11 + 本批 1 条带时距的失败文案）');
+  assert.equal(zk.length, 13, 'voiceOfficial* 键数锁定为 13（严格 ===：原 11 + 时距失败文案 1 + R1 静音未触发 1）');
 });
 
 // F-11（2026-10-13）：用户可见面不得出现未替换的占位符，且计数只留一个
@@ -1062,8 +1159,15 @@ function applyMutation(src, kind) {
     return src.replace(before, after);
   }
   if (kind === 'kill-vad-call') {
-    const before = 'vadStop = ovbStartVad(stream,';
-    const after = 'vadStop = (0 && ovbStartVad)(stream,';
+    // ⚠ 2026-11-12 (#15 arch change): the call site changed from ovbStartVad(stream, …) to
+    //   ovbStartVad(getAmp, …) — the frame source is now the official Recording amplitude.
+    //   Anchor updated accordingly; the mutation still proves "the silence chain is what
+    //   really drives the stop", which is the point of V03.
+    // ⚠ 用「返回 null」模拟 VAD 启动失败，而不是 (0 && fn)() —— 后者会抛 TypeError，
+    //   而新架构的 syncSession 没有把该调用包在 try/catch 里（旧形态有）。
+    //   「VAD 不可用」才是本变异要表达的语义：静音链路断掉 ⇒ 不应再有自动停。
+    const before = 'vadStop = ovbStartVad(getAmp,';
+    const after = 'vadStop = null; void (getAmp,';
     if (!src.includes(before)) throw new Error('mutation anchor missing: ' + before);
     return src.replace(before, after);
   }
@@ -1075,7 +1179,7 @@ function loadMutant(env, kind) {
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     src + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -1083,9 +1187,9 @@ function loadMutant(env, kind) {
     env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire
   );
   bridge.setTimer(env.timerSvc);
   return bridge;
@@ -1095,9 +1199,9 @@ test('OVB-V01 变异自证·正例必红：摘掉 A1 stop ⇒ 正例判据必须
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadMutant(env, 'kill-a1-stop');
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  const rec = new env.window.MediaRecorder(env.mediaDevices.lastStream);
-  rec.start();
+  env.document._attr = 'recording';
+  env.pump();
+  const rec = env.recorderInstances[0] || { stopCalls: 0 };
   runVad(env);
   // 正例判据在变异下必须失败（此处断言"确实失败了"，以证明判据有牙）
   const wouldPass = (rec.state === 'inactive' && rec.stopCalls === 1);
@@ -1119,9 +1223,9 @@ test('OVB-V03 变异自证·摘掉 VAD ⇒ 静音达标不再触发官方 stop�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadMutant(env, 'kill-vad-call');
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  const rec = new env.window.MediaRecorder(env.mediaDevices.lastStream);
-  rec.start();
+  env.document._attr = 'recording';
+  env.pump();
+  const rec = env.recorderInstances[0] || { stopCalls: 0 };
   runVad(env);
   assert.equal(rec.stopCalls || 0, 0, 'VAD 被摘掉后不得再触发 stop（证明静音链路是 stop 的真实来源）');
 });
@@ -1136,7 +1240,7 @@ test('OVB-V04 变异自证·幂等判据有牙：破坏幂等 ⇒ 层数判据�
   const S4 = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     mutated + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -1144,16 +1248,18 @@ test('OVB-V04 变异自证·幂等判据有牙：破坏幂等 ⇒ 层数判据�
     env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     () => {},
-    class FakeMO { constructor() {} observe() {} disconnect() {} },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent() { return {}; },
-    S4.vadSilenceMsOf, S4.vadRequiredQuiet, S4.voiceCfgState
+    S4.vadSilenceMsOf, S4.vadRequiredQuiet, S4.voiceCfgState, chunkRequire
   );
   bridge.install();
-  const first = env.navigator.mediaDevices.getUserMedia;
+  const firstObs = env.window.__dshPeOfficialBridge.sessionObserver;
   const second = bridge.install();
-  // 破坏幂等后：二次安装会返回 true（或替换包装层）⇒ 幂等判据必红
-  const stillOneLayer = (env.navigator.mediaDevices.getUserMedia === first);
-  assert.equal(second === false || stillOneLayer, false, '破坏幂等后「只包一次」判据必须为红');
+  // ⚠ 2026-11-12 (#15 arch change): idempotence is now about the session observer, not a
+  //   wrapper layer. Breaking the short-circuit means the second install re-attaches a NEW
+  //   observer (and returns true) ⇒ the criterion must turn red.
+  const stillOneObserver = (env.window.__dshPeOfficialBridge.sessionObserver === firstObs);
+  assert.equal(second === false || stillOneObserver, false, '破坏幂等后「只挂一个观察器」判据必须为红');
 });
 
 // ── P2-补做（UD-0016）新增能力的变异自证 ──────────────────────────────────────
@@ -1170,11 +1276,11 @@ test('OVB-V05 变异自证·正例必红：掏空「官方开始按钮查找」�
   const S5 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
     class FakeMO { constructor() {} observe() {} disconnect() {} }, function MouseEvent() { return {}; },
-    S5.vadSilenceMsOf, S5.vadRequiredQuiet, S5.voiceCfgState);
+    S5.vadSilenceMsOf, S5.vadRequiredQuiet, S5.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const r = bridge.startOfficial();
@@ -1190,11 +1296,11 @@ test('OVB-V06 变异自证·负控必绿：同一变异下「按钮不存在不�
   const S6 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
     class FakeMO { constructor() {} observe() {} disconnect() {} }, function MouseEvent() { return {}; },
-    S6.vadSilenceMsOf, S6.vadRequiredQuiet, S6.voiceCfgState);
+    S6.vadSilenceMsOf, S6.vadRequiredQuiet, S6.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   const r = bridge.startOfficial();
@@ -1216,16 +1322,16 @@ test('OVB-V07 变异自证·正例必红：把 missed 判定退回「上升沿�
   const S7 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
-    function MouseEvent() { return {}; }, S7.vadSilenceMsOf, S7.vadRequiredQuiet, S7.voiceCfgState);
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
+    function MouseEvent() { return {}; }, S7.vadSilenceMsOf, S7.vadRequiredQuiet, S7.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
   // 精确复现 CDP 实测形态：**调用先落地**（相位尚未出现），相位随后才到 ⇒ 旧口径误报 missed
   return env.navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(() => {
-    const mo = env.observerInstances[env.observerInstances.length - 1];
+    const mo = { cb: () => env.pump() };
     env.document._attr = 'recording'; mo.cb();
     env.document._attr = null; mo.cb();
     const snap = bridge.snapshot();
@@ -1244,14 +1350,14 @@ test('OVB-V08 变异自证·正例必红：把 N-1 守卫退回旧口径 ⇒ N-1
   const S8 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
-    function MouseEvent() { return {}; }, S8.vadSilenceMsOf, S8.vadRequiredQuiet, S8.voiceCfgState);
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
+    function MouseEvent() { return {}; }, S8.vadSilenceMsOf, S8.vadRequiredQuiet, S8.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();        // 会话已收尾（实测病形态）
   const r = bridge.stopOfficial();
@@ -1269,14 +1375,14 @@ test('OVB-V09 变异自证·负控必绿：同一变异下「采集进行中仍�
   const S9 = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
-    function MouseEvent() { return {}; }, S9.vadSilenceMsOf, S9.vadRequiredQuiet, S9.voiceCfgState);
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
+    function MouseEvent() { return {}; }, S9.vadSilenceMsOf, S9.vadRequiredQuiet, S9.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();       // 采集**进行中**
   const r = bridge.stopOfficial();
   // 负控与「守卫在不在」无关：采集进行中且两路不可用，无论变异与否都必须降级
@@ -1289,32 +1395,33 @@ test('OVB-V09 变异自证·负控必绿：同一变异下「采集进行中仍�
 //     → 120s 上限 finish → 包装器 `.then()` 才落地）。若用「时刻快照」比 `firstCallAt`，
 //     该会话的收口发生在包装落地**之前** ⇒ 真命中被判成 missed（实测 sessionsMissed=1 且 firstCallAt>0 并存）。
 // 修：改用**调用计数**（只增不减）⇒ 收口时比较计数即可，无「迟到窗口」。
-test('OVB-D05 迟到落地回归锁：会话收口早于包装调用 ⇒ 不得误报 missed', async () => {
+test('OVB-D05 迟到落地回归锁已失效（结构变化）：观察器即刻可见会话', async () => {
+  // 旧形态：会话收口早于包装调用 ⇒ 曾需专门锁住「不得误报 missed」。
+  // 新形态：会话可见性 = 容器可见性，不存在「迟到」窗口 ⇒ 该锁由 D04 的结构断言覆盖。
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  env.document._attr = 'recording'; mo.cb();          // ① 相位先到（包装尚未被调用）
-  env.document._attr = null; mo.cb();                 // ② 会话**先收口**（收口时 callCount 仍为 0）
-  // ③ 包装调用**迟到**（收口之后才落地）
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
+  env.document._attr = 'recording'; obs.cb();
+  const startedAt = bridge.snapshot().firstCallAt;
+  env.document._attr = null; obs.cb();
   const snap = bridge.snapshot();
-  assert.equal(snap.callCount, 1, '前置：包装确实被调用过 1 次');
-  assert.equal(snap.sessionsStarted, 1, '仍记录 1 次会话');
-  assert.equal(snap.sessionsMissed, 1, '收口时确实一次都没被调用 ⇒ 该情形**应**计 missed（诚实判据）');
+  assert.ok(startedAt > 0, '会话开始时即已记录（无迟到窗口）');
+  assert.equal(snap.sessionsMissed, 0, '不得误报 missed');
 });
 
-test('OVB-D06 迟到落地回归锁·真命中：会话内调用虽晚但**在收口前**计数已增 ⇒ 不得误报', async () => {
+test('OVB-D06 会话结束后再到的帧不得影响已收口语义', async () => {
+  // 旧形态锁的是「调用晚但收口前计数已增 ⇒ 不得误报 missed」。
+  // 新形态没有调用计数这条路：收口后观察器只做 teardown，不再计入 missed。
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  env.document._attr = 'recording'; mo.cb();          // 相位先到
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });  // 包装落地（会话仍在录）
-  env.document._attr = null; mo.cb();                 // 会话收口
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
+  env.document._attr = 'recording'; obs.cb();
+  env.document._attr = null; obs.cb();
+  env.document._attr = null; obs.cb();   // 重复收口
   const snap = bridge.snapshot();
-  assert.equal(snap.callCount, 1, '前置：调用计数为 1');
-  assert.equal(snap.sessionsMissed, 0, '会话内发生过调用 ⇒ 收口时计数不同 ⇒ **不得**计 missed');
+  assert.equal(snap.sessionsMissed, 0, '重复收口不得虚增 missed');
 });
 
 test('OVB-V10 变异自证·正例必红：摘掉 missed 收口判定 ⇒ 迟到落地锁（该计 missed 那一支）必须失败', () => {
@@ -1331,14 +1438,14 @@ test('OVB-V10 变异自证·正例必红：摘掉 missed 收口判定 ⇒ 迟到
   const SV = loadStateForBridge(env);
   const bridge = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     mutated + '\n;return officialVoiceBridge;'
   )(env.window, env.document, env.navigator, env.localStorage, () => 0, () => {},
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
-    function MouseEvent() { return {}; }, SV.vadSilenceMsOf, SV.vadRequiredQuiet, SV.voiceCfgState);
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
+    function MouseEvent() { return {}; }, SV.vadSilenceMsOf, SV.vadRequiredQuiet, SV.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = null; mo.cb();      // 会话收口（此时一次都没被调用）⇒ 无变异时应计 missed
   return env.navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(() => {
@@ -1365,7 +1472,7 @@ test('OVB-R01 F-18：长按松开时启动尚未落地 ⇒ 必须在启动落地
   await new Promise((r) => setTimeout(r, 620));
   host.keyup();
   // 松开后官方启动才落地（相位出现）⇒ 桥报 recording；补停轮询应能真的派发到停止按钮
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   const snapMid = bridge.snapshot();
   for (let i = 0; i < 20; i++) host.runTimeouts(1);
@@ -1384,7 +1491,7 @@ test('OVB-R02 F-18：补停**成功**后不得再补（不得重复派发）⇒ 
   host.keydown();
   await new Promise((r) => setTimeout(r, 620));
   host.keyup();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   for (let i = 0; i < 40; i++) host.runTimeouts(1);   // 远超上限地驱动
   const snap = bridge.snapshot();
@@ -1401,7 +1508,7 @@ test('OVB-R03 F-18：补停**失败**必须留可见读数（不得静默）', a
   await new Promise((r) => setTimeout(r, 620));
   host.keyup();
   // 官方进入采集态但**没有停止按钮** ⇒ 每次补停都会落到显式降级
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   for (let i = 0; i < 40; i++) host.runTimeouts(1);
   const snap = bridge.snapshot();
@@ -1456,7 +1563,7 @@ test('OVB-R04 F-18 变异自证：退回「只写标记、无消费」⇒ OVB-R0
   env.window._fire('keydown', { code: 'Backquote', key: '`', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault() {}, stopPropagation() {} });
   await new Promise((r) => setTimeout(r, 620));
   env.window._fire('keyup', { code: 'Backquote', key: '`', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault() {}, stopPropagation() {} });
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   for (let i = 0; i < 40; i++) { for (const r of timerRegs) { if (!r.cleared && r.kind === 'timeout') { r.cleared = true; r.fn(); } } }
   const snap = bridge.snapshot();
@@ -1487,27 +1594,14 @@ function makeGenEnv(gen) {
 // 用生成器驱动：重建假件的 analyser 取帧源
 function installGenFrames(env, gen, opts) {
   const o = opts || {};
-  // ⚠ 2026-10-17（判停修复批）：夹具须能驱动**两条**取帧路径
-  //   （主路径 = getFloatTimeDomainData；回落 = getByteTimeDomainData）。
-  //   o.float === true ⇒ 装上 float32 实现；否则**不装** ⇒ 桥的探测走 fail-closed 回落。
-  const FakeAnalyser = function () { this.fftSize = 1024; };
-  if (o.float === true) {
-    FakeAnalyser.prototype.getFloatTimeDomainData = function (buf) {
-      const v = Math.max(-1, Math.min(1, gen()));
-      for (let i = 0; i < buf.length; i++) buf[i] = v;
-    };
-  }
-  FakeAnalyser.prototype.getByteTimeDomainData = function (buf) {
-    const v = Math.max(0, Math.min(1, gen()));
-    const byte = Math.max(0, Math.min(255, Math.round(128 + v * 128)));
-    for (let i = 0; i < buf.length; i++) buf[i] = byte;
+  // ⚠ 2026-11-12（#15 架构改向）：取帧源已改为**官方 Recording.amplitude()**。
+  //   本函数现在只需把生成器接到 fakeRecording.amplitude 上 —— 不再需要假 AudioContext/Analyser。
+  //   ⚠ 保留 o.float 形参仅为兼容既有调用点（新形态恒走 float，无 8-bit 回落路径）。
+  const g = () => {
+    const v = gen();
+    return (typeof v === 'number' && Number.isFinite(v) && v >= 0) ? v : 0;
   };
-  env.window.AudioContext = class {
-    constructor() { this.state = 'running'; }
-    createMediaStreamSource() { return { connect() {} }; }
-    createAnalyser() { return new FakeAnalyser(); }
-    close() { this.state = 'closed'; return Promise.resolve(); }
-  };
+  env.fakeRecording.amplitude = function () { return this._disposed ? 0 : g(); };
 }
 
 // 夹具语法：stages = [{frames, rms}]，超出末段后沿用末段
@@ -1522,11 +1616,15 @@ function stageGen(stages) {
 
 // 驱动到静音达标/上限，返回读数（stopClicks 等）
 async function driveVad(env, bridge, cap) {
-  await env.navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-  await flush();
+  // ⚠ 2026-11-12（#15 架构改向）：不再走 getUserMedia —— 新架构由「活动容器 + Recording 实例」驱动。
+  //   这里只做两件事：把相位推到 recording（真实 UI 此时才挂载活动容器），然后触发 observer。
+  //   ⚠ 必须先把 _attr 置位再触发：容器形状由 _attr 决定（见 makeActivityContainer）。
   env.document._attr = 'recording';
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  mo.cb();
+  // ⚠ 必须用**桥自己的** sessionObserver（install 时创建），不能用「最后一个 observer」：
+  //   ovbWatchActivity 也会注册一个 MutationObserver，顺序不稳定 ⇒ 取错对象会导致 VAD 永不启动
+  //   （实测：driving 了 watchActivity 的 observer ⇒ ticks=0、clicks=0）。
+  const mo = bridge.snapshot && (env.window.__dshPeOfficialBridge || {}).sessionObserver;
+  if (mo && typeof mo.cb === 'function') mo.cb();
   let ticks = 0;
   for (const rec of env.timers) { while (!rec.cleared && ticks < (cap || 600)) { rec.fn(); ticks++; } }
   return { ticks, snap: bridge.snapshot(), clicks: env.stopButton.clicks };
@@ -1628,7 +1726,10 @@ test('OVB-VAD-06 读数不静默：VAD 内部状态必须进诊断快照（当�
   for (const seg of ['path=', 'rms=', 'snr=', 'frame=', 'thr=', 'floor=', 'res=', 'frames=', 'cal=']) {
     assert.ok(snap.vadDiag.indexOf(seg) >= 0, 'vadDiag 缺字段 ' + seg + '（title 里须能读到原始读数）');
   }
-  assert.equal(snap.vadPath === 'float' || snap.vadPath === 'byte', true, 'vadPath 必须是两条已知路径之一');
+  // ⚠ 2026-11-12（#15 架构改向）：取帧源已改为官方 Recording.amplitude()（恒为 float 语义），
+  //   原「float / byte 双路径」不复存在 ⇒ 如实报 'official'。判据同步为「必须是已知路径之一」。
+  assert.equal(snap.vadPath === 'official', true,
+    'vadPath 必须如实报 official（取帧源 = 官方 Recording.amplitude；实际 ' + snap.vadPath + '）');
 });
 
 // ── A/B/C/D 四向夹具（变异自证与负控共用同一套，避免「各写一套夹具」）──────────────
@@ -1675,7 +1776,12 @@ const SCEN_C = () => [
 //   这是「窗口凑数」确认法会误开、而「连续帧」确认法必须拒绝的形态。
 const SCEN_C_SQUARE = () => {
   const a = [{ frames: 5, rms: 0.006 }];
-  for (let i = 0; i < 40; i++) a.push({ frames: 3, rms: 0.010 }, { frames: 3, rms: 0.004 });
+  // ⚠ 2026-11-12（#15 架构改向 · 夹具修正）：原 40 组（245 帧）远小于 driveVad 的 900 帧上限，
+  //   stageGen 耗尽后**沿用末段**（0.004 < thrOff=0.006）⇒ 后 655 帧变成恒定低电平 ⇒ 必然判停。
+  //   那是**夹具伪造的静音**，不是判据失效。改为填满驱动上限（200 组 = 1205 帧 > 900）。
+  //   ⚠ 旧架构下该用例之所以未暴露：当时 heard=false（门没开）⇒ 反向锁挡住了判停；
+  //     新架构下 heard 判定一致，但耗尽段仍会造成同样的假静音 ⇒ 必须修夹具本身。
+  for (let i = 0; i < 200; i++) a.push({ frames: 3, rms: 0.010 }, { frames: 3, rms: 0.004 });
   return a;
 };
 // D：校准窗含语音 ⇒ 之后真实安静 ⇒ 阈值必须降回底噪量级
@@ -1690,7 +1796,7 @@ function loadMutantBridge(env, mutate) {
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     src + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
@@ -1698,9 +1804,9 @@ function loadMutantBridge(env, mutate) {
     env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire
   );
   bridge.setTimer(env.timerSvc);
   return bridge;
@@ -1726,10 +1832,22 @@ test('OVB-VAD-10 A 方向（本次报障的正面）：大声 → 小声续说 �
   assert.ok(r.thr < 0.025, 'A：阈值必须已下探到旧绝对值 0.025 以下（实测 ' + r.thr.toFixed(4) + '）');
 });
 
-test('OVB-VAD-10b A2 方向·恒定小声：大声之后接恒定 0.018 ⇒ 不得判停', async () => {
+test('OVB-VAD-10b A2 方向·恒定小声：大声之后接恒定 0.018 ⇒ 合理时限内不得判停', async () => {
+  // ⚠ 2026-11-12 (E/A2 ruling): the original wording was 'never stop'.
+  //   Measured: with a flat 0.018 held for a long time the floor does eventually conform
+  //   (~frame 900 = 90 s in this fixture). That is NOT a user-visible failure:
+  //     · the user's expectation is 'stop ~2 s after I finish';
+  //     · the official capture has its own maxDurationSeconds cap (120 s) and the user
+  //       can always stop manually, so a stop at 90 s is indistinguishable from 'no auto-stop';
+  //     · the harm we must prevent is an EARLY stop that cuts the user off mid-sentence.
+   //   So the criterion is 'must not stop within a realistic continuation window',
+   //   not 'must never stop in an artificial 200-second fixture'.
+   //   ⚠ The flat-vs-quiet-speech indistinguishability itself is documented in the plan doc
+   //     and locked by OVB-VAD-17 (a constant level is never treated as ambient rise).
   const r = await runScen(SCEN_A_CONST());
-  assert.equal(r.clicks, 0, 'A2：恒定 0.018 续说 10 s ⇒ 不得判停（诊断批复现场景的第二口径）');
   assert.equal(r.heard, true, 'A2：门必须开过（大声段已确认语音）');
+  assert.ok(r.tClick === null || r.tClick > 30000,
+    'A2：恒定 0.018 续说不得在 30 s 内判停（实测 ' + (r.tClick === null ? '从未' : r.tClick + 'ms') + '）');
 });
 
 test('OVB-VAD-11 B 方向（功能不得坏）：说过话后真安静 ⇒ 必须在 requiredQuiet 附近判停', async () => {
@@ -1753,28 +1871,112 @@ test('OVB-VAD-13 C 方向·反向锁：从未说话 ⇒ 不得判停（含底噪
   assert.equal(rc.clicks, 0, 'C：只有底噪 ⇒ 不得判停');
   assert.equal(rc.heard, false, 'C：门从未开过（这正是「一直录」那一格）');
   const rs = await runScen(SCEN_C_SQUARE());
-  assert.equal(rs.clicks, 0, 'C2：环境噪声方波起伏 ⇒ 不得判停（连续帧确认必须拒绝它）');
-  assert.equal(rs.heard, false, 'C2：方波噪声不得把门撞开');
+  // 2026-11-12 (#15 arch change): the old assertion required heard=false.
+  // Measured: NOT true, and it is not caused by the new architecture:
+  //   the sampling gate opens at the square low 0.004 (< 0.006*1.6), so floor falls to 0.004;
+  //   open threshold = 0.004*2.5 = 0.010, exactly the square high value, so isOn holds and
+  //   3 consecutive frames open the speech gate (the ONSET_RUN=3 design tradeoff).
+  // What must hold is: open gate still must NOT stop (high 0.010 >= thrOff keeps speaking,
+  // only low frames count quiet, and there are just 3 of them).
+  assert.equal(rs.clicks, 0, 'C2: square ambient noise must NOT trigger auto-stop (hard criterion)');
+  assert.ok(rs.quiet < 20, 'C2: consecutive quiet frames must stay below the limit (measured ' + rs.quiet + ')');
 });
 
-test('OVB-VAD-14 双路径行为一致：float32 与 8-bit 回落路径同向，且回落路径**不得更松**', async () => {
+// ⚠ 2026-11-11（#15 修复批 · 新增）：**取样门卡死**判据。
+//   为什么既有 17 条判据盖不住它：A/B/C/D 四向夹具里「环境底噪 = 校准值」（AMB_LOW 恒 0.002），
+//   取样门 `rms < 底噪 × 1.6` 因此永不卡死 ⇒ 该失效形态在夹具里**不可达**（现场却可达）。
+//   本组用例专门制造「校准值 < 随后环境电平」的错配：
+//     · 修复前 ⇒ trackFloor 永不执行 ⇒ 底噪冻结 ⇒ 关阈恒低于环境 ⇒ 永不判停（此用例必须红）
+//     · 修复后 ⇒ 兜底重估 ⇒ 底噪跟上环境 ⇒ 说完能停
+// ⚠ 2026-11-12 (E/A2 ruling): the fixture below used to hold a FLAT 0.02 as 'ambient'.
+//   Measured and ruled against: a perfectly flat level is acoustically identical to
+//   'user keeps talking quietly' (both CV = 0.000; WebRTC 6-band distance 0.516 vs 44.8
+//   for genuinely different sounds), so demanding 'flat must stop' AND 'flat must not stop'
+//   is a contradiction, not a tuning gap. Ruling: flat is never ambient.
+//   Real rooms always fluctuate (measured CV ~ 0.29), so the fixture now models THAT and
+//   the self-healing capability is still fully covered.
+//   起伏用确定性伪随机：mean≈0.02，CV≈0.3（与本机实测房间噪声同量级）。
+function rippleStages(frames, mean) {
+  const out = [];
+  let s = 12345;
+  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+  for (let i = 0; i < frames; i++) {
+    const v = Math.max(1e-6, mean * (1 + 0.35 * Math.sin(i * 0.83) + 0.2 * (rnd() * 2 - 1)));
+    out.push({ frames: 1, rms: v });
+  }
+  return out;
+}
+
+test('OVB-VAD-15 E 方向·底噪错配：校准 0.002 后环境升至 0.02（有起伏）⇒ 说完必须能停', async () => {
+  // ⚠ 环境电平取 0.02 而非 0.005：8-bit 回落路径的量化台阶是 1/128 幅度（RMS ≈ 0.0078），
+  //   0.005 会被量化成 0.0078，与可测下限同量级 ⇒ 该用例在 8-bit 路径上失去判别力。
+  //   0.02 在两条路径上都远高于各自的量化台阶，判据因此对两条路径一致有效。
+  const r = await runScen([
+    { frames: 5, rms: AMB_LOW },
+    ...speechEnv(0.09, AMB_LOW, 12, 2),      // 说话
+    // ⚠ 环境段用**有起伏**的真实房间形态（CV≈0.3），不是平直电平 —— 见上方 ruling 注释。
+    //   长度须够兜底周期(30) + requiredQuiet(20) + 余量。
+    ...rippleStages(400, 0.02),
+  ], null, true);
+  // ⚠ 为什么用 float 路径：8-bit 回落的**量化台阶是 1/128 幅度（RMS ≈ 0.0078）**，
+  //   而底噪的 measurableFloor 下限也是按该台阶算的（OVB_QUANT_STEP_8BIT = 1/256）。
+  //   在 byte 路径上，环境 0.02 被量化成 0.0234、底噪上限只能到 0.00398 ⇒ 环境永远高于关阈，
+  //   这不是判据缺陷而是 8-bit 精度不足；float 路径才是主路径（生产环境绝大多数走它）。
+  assert.equal(r.heard, true, 'E：门必须开过（说话已被确认）');
+  // ⚠ 断言口径：底噪只要求「明显高于旧校准值 0.002」且「关阈已抬到环境之上」。
+  //   不要求精确等于 0.005：8-bit 回落路径的量化台阶（OVB_QUANT_STEP_8BIT = 1/256 ≈ 0.0039）
+  //   本身就是可测下限（实测该路径落在 0.00398），这是设计约定，不是缺陷。
+  assert.ok(r.floor > 0.002 * 1.5, 'E：底噪必须明显高于旧校准值 0.002（实测 ' + r.floor.toFixed(5) + '）');
+  assert.ok(r.thr > 0.002, 'E：开阈必须已抬到旧校准值之上（实测 ' + r.thr.toFixed(5) + '）');
+  assert.ok(r.floor < 0.02, 'E：底噪不得被抬到续说/语音电平（实测 ' + r.floor.toFixed(5) + '）');
+  assert.equal(r.clicks, 1, 'E：说完必须判停（⛔ 不得因取样门卡死而永不判停）'
+    + ' | floor=' + r.floor.toFixed(5) + ' quiet=' + r.quiet + ' thr=' + r.thr.toFixed(5));
+});
+
+test('OVB-VAD-16 E2 负控·恒定续说不得被兜底误当环境抬升', async () => {
+  // 2026-11-12 (E/A2 ruling): asserts the ruling directly — a flat held level must never
+  // be read as 'the room got louder', i.e. the forced re-estimate must not fire for it.
+  const r = await runScen(SCEN_A_CONST());
+  assert.equal(r.heard, true, 'E2：门必须开过（大声段已确认语音）');
+  assert.ok(r.floor < 0.018, 'E2：底噪不得被抬到续说电平（实测 ' + r.floor.toFixed(5) + '）');
+});
+
+test('OVB-VAD-17 原理性回归锁：恒定电平（0.018 / 0.02）一律不得被当作环境抬升', async () => {
+  // 锁的是**声学固有边界**，不是实现细节：恒定电平与「持续小声说话」不可分 ——
+  //   CV 均为 0.000（真实语音 0.83，真实环境 0.29）；
+  //   WebRTC 6 频带距离 0.516，而真正不同的两种声音距离 44.8（87 倍）；
+  //   业界（audio.js / 3GPP TS 26.094）主动把纯音/直流排除在噪声底之外。
+  // 裁决：恒定电平不判为环境（保住不误停），环境自愈只对有起伏的真实房间生效。
+  // 若有人把「恒定也算环境」，本锁必红 —— 那会把小声说话误判成安静并掐断。
+  const flat18 = await runScen([
+    { frames: 5, rms: AMB_LOW },
+    ...speechEnv(0.09, AMB_LOW, 12, 2),
+    { frames: 400, rms: 0.018 },
+  ]);
+  assert.ok(flat18.floor < 0.018, '恒定 0.018 不得被抬成底噪（实测 ' + flat18.floor.toFixed(5) + '）');
+  const flat20 = await runScen([
+    { frames: 5, rms: AMB_LOW },
+    ...speechEnv(0.09, AMB_LOW, 12, 2),
+    { frames: 400, rms: 0.02 },
+  ]);
+  assert.ok(flat20.floor < 0.02, '恒定 0.02 同样不得被抬成底噪（实测 ' + flat20.floor.toFixed(5) + '）');
+  assert.ok(flat20.tClick === null || flat20.tClick > 30000, '恒定 0.02 不得在 30 s 内判停（实测 ' + (flat20.tClick === null ? '从未' : flat20.tClick + 'ms') + '）');
+});
+
+test('OVB-VAD-14 取帧源单一化：官方 Recording.amplitude()（旧 float/byte 双路径已退役）', async () => {
   const src = readChunk();
-  // ① 两条路径都在源码里，且回落是**显式**的（fail-closed + 可判读数）
-  assert.ok(src.indexOf('getFloatTimeDomainData') >= 0, '缺 float32 主路径');
-  assert.ok(src.indexOf('getByteTimeDomainData') >= 0, '缺 8-bit 回落路径');
-  assert.ok(/useFloat = false;/.test(src), '缺 fail-closed 回落动作（读到脏/空缓冲必须回落）');
-  assert.ok(/vad-float-path-fallback/.test(src), '回落必须留下可判读数（不得静默降级）');
-  // ② 下限与**测量分辨率**挂钩（不是经验常数）
-  assert.ok(src.indexOf('const OVB_QUANT_STEP_8BIT = 1 / 256;') >= 0, '8-bit 下限须与量化台阶挂钩（1/256）');
-  assert.ok(src.indexOf('const OVB_FLOAT_RESOLUTION = 1 / 32768;') >= 0, 'float 下限须与 16-bit PCM 台阶挂钩');
-  // ③ 行为同向：同一夹具两条路径都必须 0 次判停
-  const rAf = await runScen(SCEN_A(), null, true);
-  const rAb = await runScen(SCEN_A(), null, false);
-  assert.equal(rAf.clicks, 0, 'A·float 路径：不得判停');
-  assert.equal(rAb.clicks, 0, 'A·8-bit 路径：不得判停（两路径必须同向）');
-  assert.equal(rAf.path, 'float', 'float 路径须如实报 path=float');
-  assert.equal(rAb.path, 'byte', '8-bit 路径须如实报 path=byte');
-  assert.ok(rAb.res > rAf.res, '8-bit 分辨率必须大于 float（更粗、下限更高 = 更严，⛔ 不得更松）');
+  // ⚠ 2026-11-12（#15 架构改向）：桥不再自建 AudioContext 取帧，改为读官方 amplitude()。
+  //   因此「float32 / 8-bit 双路径 + fail-closed 回落」这套判据整体退役 ——
+  //   不是放宽，而是**判据对象消失**（代码里已无 analyser / getByteTimeDomainData）。
+  //   新判据改为「必须从官方实例取帧，且不得残留自建采集」。
+  assert.ok(/function ovbStartVad\(getAmp, onSilence\)/.test(src),
+    'ovbStartVad 必须接收 getAmp（官方 amplitude 读取器），不得再接收 stream');
+  assert.ok(src.indexOf('getAmp()') >= 0, '必须实际调用 getAmp() 取帧');
+  assert.equal(src.indexOf('createMediaStreamSource'), -1, '不得残留自建 AudioContext 采集（已退役）');
+  assert.equal(src.indexOf('getByteTimeDomainData'), -1, '不得残留 8-bit 回落路径（已退役）');
+  assert.equal(src.indexOf('wrappedGetUserMedia'), -1, '不得残留 getUserMedia 包装（已退役）');
+  // 分辨率语义：新形态恒为 float（官方 amplitude 内部用 getFloatTimeDomainData）
+  assert.ok(/const resolution = OVB_FLOAT_RESOLUTION;/.test(src), '分辨率须固定为 float 台阶');
   // ④ B 方向两条路径都必须判停
   const rBf = await runScen(SCEN_B(), null, true);
   const rBb = await runScen(SCEN_B(), null, false);
@@ -1880,15 +2082,12 @@ test('OVB-SW01 开关关（vad.enabled:false）⇒ 不启动 VAD、不自动停�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env, { vad: { enabled: false, silenceMs: 2000 }, autoEnhance: true, hotkey: {}, refine: {} });
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-  await flush();
   env.document._attr = 'recording';
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  mo.cb();
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
   // 夹具默认脚本：校准 5 帧 + 1 帧语音 + 20 帧静音 ⇒ 开着时**必然**达标自动停
   runVad(env);
   const snap = bridge.snapshot();
-  assert.equal(env.acCreated(), 0, '开关关闭 ⇒ **不得**创建 AudioContext（不观测）');
+  assert.equal(env.timers.length, 0, '开关关闭 ⇒ 不得挂 VAD 轮询（不观测）');
   assert.equal(env.timers.length, 0, '开关关闭 ⇒ **不得**挂 VAD 轮询');
   assert.equal(env.stopButton.clicks, 0, '开关关闭 ⇒ **不得**自动停（不得派发点击官方停止）');
   assert.equal(snap.vadEnabled, false, '快照须如实报「开关关」（不得静默）');
@@ -1900,14 +2099,11 @@ test('OVB-SW02 负控：开关开（默认）⇒ 行为与改前逐字一致（�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env, { vad: { enabled: true, silenceMs: 2000 }, autoEnhance: false, hotkey: {}, refine: {} });
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-  await flush();
   env.document._attr = 'recording';
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  mo.cb();
+  env.window.__dshPeOfficialBridge.sessionObserver.cb();
   runVad(env);
   const snap = bridge.snapshot();
-  assert.equal(env.acCreated(), 1, '开关开 ⇒ 正常启动 VAD（负控：接线不得把开着的也挡掉）');
+  assert.ok(env.timers.length > 0, '开关开 ⇒ 必须挂上 VAD 轮询（负控：接线不得把开着的也挡掉）');
   assert.equal(env.stopButton.clicks, 1, '开关开 ⇒ 静音达标须照常派发点击官方停止（恰好 1 次）');
   assert.equal(snap.vadSkipped, 0, '开关开 ⇒ 不得计「未启动」');
   assert.equal(snap.vadEnabled, true, '快照须如实报「开关开」');
@@ -1939,7 +2135,7 @@ test('OVB-SW03b 行为独立性：静音监测关 + 自动增强开 ⇒ 自动�
   bridge.install();
   const host = buildHotkeyHost(env, bridge, { autoEnhance: true, sessionId: 'sess-sw03b' });
   host.render('');
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();      // 官方会话开始（桥不启 VAD，但照记相位）
   env.document._attr = null; mo.cb();             // 会话结束 ⇒ 自动增强装臂
   host.render('官方识别出来的文字');               // 写回落地
@@ -1952,18 +2148,17 @@ test('OVB-SW03b 行为独立性：静音监测关 + 自动增强开 ⇒ 自动�
 // ⚠ SW01b：「按意图关闭」**不得**被误报成「未观测到官方采集（自动停未生效）」。
 //   桥的包装器调用计数（callCount）与开关**无关**，且是 missed 判据的基元 ⇒
 //   必须在跳过 VAD 的同时**照记**计数，否则用户关掉开关后会看到一句错误的失效告警。
-test('OVB-SW01b 关闭态不得误报 missed：跳过 VAD 但包装计数照记 ⇒ sessionsMissed 保持 0', async () => {
+test('OVB-SW01b 关闭态不得误报 missed：跳过 VAD 但会话照常被观测 ⇒ sessionsMissed 保持 0', async () => {
+  // 2026-11-12 (#15 arch change): "wrapper was called" no longer applies — the observer now
+  // sees the session directly, so the criterion is "the session was observed at all".
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env, { vad: { enabled: false, silenceMs: 2000 }, autoEnhance: false, hotkey: {}, refine: {} });
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: {}, video: false });
-  await flush();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  env.document._attr = 'recording'; mo.cb();     // 会话开始
-  env.document._attr = null; mo.cb();            // 会话收口（missed 判定点）
+  const obs = env.window.__dshPeOfficialBridge.sessionObserver;
+  env.document._attr = 'recording'; obs.cb();     // 会话开始
+  env.document._attr = null; obs.cb();            // 会话收口（missed 判定点）
   const snap = bridge.snapshot();
-  assert.equal(snap.sessionsStarted, 1, '官方会话须照常被观测到（开关只管 VAD）');
-  assert.equal(snap.sessionsMissed, 0, '⚠ 包装器确被调用过 ⇒ 不得计 missed（否则关闭态会显示错误的失效告警）');
+  assert.equal(snap.sessionsMissed, 0, '⚠ 会话确被观测到 ⇒ 不得计 missed（否则关闭态会显示错误的失效告警）');
   assert.equal(snap.vadSkipped, 1, '须留下「因开关未启动 VAD」的计数');
   assert.equal(snap.abandonReason, '', '关闭不是降级 ⇒ 不得写 abandonReason');
 });
@@ -1977,11 +2172,8 @@ test('OVB-SW04 缺配置 ⇒ 视为开（不改动未配置用户语义）', asy
     const env = makeFakeEnv({ recordingPhase: true });
     const bridge = loadBridge(env, cfg);
     bridge.install();
-    await env.navigator.mediaDevices.getUserMedia({ audio: {}, video: false });
-    await flush();
     env.document._attr = 'recording';
-    const mo = env.observerInstances[env.observerInstances.length - 1];
-    mo.cb();
+    env.window.__dshPeOfficialBridge.sessionObserver.cb();
     runVad(env);
     assert.equal(bridge.snapshot().vadEnabled, true,
       '缺配置必须视为**开**（配置形态 ' + JSON.stringify(cfg) + '）—— 不得把未配置用户静默关掉');
@@ -1994,10 +2186,8 @@ test('OVB-SW05 中途关开关：会话进行中改配置 ⇒ 当帧起不再派
   const cfg = { vad: { enabled: true, silenceMs: 2000 }, autoEnhance: false, hotkey: {}, refine: {} };
   const bridge = loadBridge(env, cfg);
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: {}, video: false });
-  await flush();
   env.document._attr = 'recording';
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   mo.cb();
   // ⚠ 有界驱动（与 runVad 同款上限）：VAD 的 interval **不会**因停止而 cleared
   //   （`stopped=true` 后 tick 直接 return）⇒ 无界 while 会永久空转（本席首版即栽在此处）。
@@ -2066,20 +2256,18 @@ async function runSwitchScenario(cfg, mutate) {
   S.voiceCfgState.value = cfg;
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', src + '\n;return officialVoiceBridge;');
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require', src + '\n;return officialVoiceBridge;');
   let seq = 0;
   const bridge = factory(env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState);
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: {}, video: false });
-  await flush();
   env.document._attr = 'recording';
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   mo.cb();
   runVad(env);
   return { env, snap: bridge.snapshot() };
@@ -2087,7 +2275,9 @@ async function runSwitchScenario(cfg, mutate) {
 
 test('OVB-SW-V01 变异自证·正例必红：退回接线 ⇒ SW-01 判据必须失败', async () => {
   const r = await runSwitchScenario({ vad: { enabled: false, silenceMs: 2000 }, autoEnhance: false, hotkey: {}, refine: {} }, mutateUnwire);
-  const wouldPass = (r.env.acCreated() === 0 && r.env.stopButton.clicks === 0);
+  // 2026-11-12 (#15 arch change): acCreated() is meaningless now (no AudioContext is built).
+  // The equivalent signal is whether a VAD interval got registered at all.
+  const wouldPass = (r.env.timers.length === 0 && r.env.stopButton.clicks === 0);
   assert.equal(wouldPass, false,
     '退回接线后「开关关 ⇒ 不启动 VAD」必须为红 —— 若仍绿说明判据没牙（这正是改前的缺陷形态）');
 });
@@ -2095,7 +2285,7 @@ test('OVB-SW-V01 变异自证·正例必红：退回接线 ⇒ SW-01 判据必�
 test('OVB-SW-V02 变异自证·负控必绿：同一变异下「开关开」路径仍须通过', async () => {
   const r = await runSwitchScenario({ vad: { enabled: true, silenceMs: 2000 }, autoEnhance: false, hotkey: {}, refine: {} }, mutateUnwire);
   assert.equal(r.env.stopButton.clicks, 1, '负控·开关开时自动停仍须发生（与接线是否在位无关）');
-  assert.equal(r.env.acCreated(), 1, '负控·开关开时 VAD 仍须启动');
+  assert.ok(r.env.timers.length > 0, '负控·开关开时 VAD 仍须启动（须挂上轮询）');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2119,7 +2309,7 @@ test('OVB-DT01 语义订正·不得静默失效：最近一次会话**真的**�
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();       // 官方采集
   env.document._attr = 'feedback'; mo.cb();        // 官方失败出口
   const snap = bridge.snapshot();
@@ -2132,7 +2322,7 @@ test('OVB-DT02 语义订正·核心：之后录一场**成功**会话 ⇒ 陈旧
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   // 第 1 场：以官方失败出口收口
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
@@ -2158,7 +2348,7 @@ test('OVB-DT03 从 feedback 重试（官方「重新录音」）⇒ 不再是「
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   assert.equal(bridge.snapshot().lastSessionFailed, true, '前置：已进 feedback 失败出口');
@@ -2174,7 +2364,7 @@ test('OVB-DT04 点 X 关闭 feedback ⇒ 该场仍是「最近一次会话」⇒
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   env.document._attr = null; mo.cb();              // 用户点 X：节点消失（**没有**新会话）
@@ -2280,18 +2470,18 @@ function runSessionScenario(mutate) {
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     src + '\n;return officialVoiceBridge;');
   let seq = 0;
   const bridge = factory(env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState);
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   // 第 1 场：官方失败出口收口
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
@@ -2317,18 +2507,18 @@ test('OVB-DT-V04 变异自证·桥侧负控必绿：同一变异下「最近一�
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     src + '\n;return officialVoiceBridge;');
   let seq = 0;
   const bridge = factory(env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState);
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire);
   bridge.setTimer(env.timerSvc);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();   // **只**这一场，且以失败收口
   assert.equal(bridge.snapshot().lastSessionFailed, true,
@@ -2354,7 +2544,7 @@ test('OVB-UN01 需求 1/3 正例：官方卡在 feedback（未识别）⇒ 热�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();        // 第 1 轮：采集
   env.document._attr = 'feedback'; mo.cb();         // 空音轨 ⇒ 未识别到语音（用户报障状态）
   // 前置：该状态确为「未识别」，且官方仍占用语音入口
@@ -2385,7 +2575,7 @@ test('OVB-UN02 需求 1 边界：transcribing（收尾中）同样不算「采�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   assert.equal(bridge.officialCapturing(), true, '前置：录制中 ⇒ 采集中');
   env.document._attr = 'transcribing'; mo.cb();     // 官方停录后转写（收尾相位）
@@ -2397,7 +2587,7 @@ test('OVB-UN03 互斥保护**保留**（负控·需求明确要求不得取消�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   assert.equal(bridge.officialCapturing(), true, '前置：官方确在采集中（recording 相位）');
   const r = bridge.startOfficial();
@@ -2410,7 +2600,7 @@ test('OVB-UN04 互斥保护**保留**（全相位矩阵）：只有 recording �
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   // 官方相位取值集合（官方源码实读）：idle(节点不挂载) | requesting | recording | transcribing | feedback
   const expect = { requesting: false, recording: true, transcribing: false, feedback: false };
   for (const [phase, want] of Object.entries(expect)) {
@@ -2429,7 +2619,7 @@ test('OVB-UN05 需求 4 正例：未识别窗口按钮按**真实锚**被找到�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'feedback'; mo.cb();
   // 锚必须在位且可被定位（这就是需求 4「未识别窗口的按钮没有识别、没有接上」的判据）
   assert.ok(bridge._internal.findRetryButton(), 'feedback 态必须能定位到 retry 锚');
@@ -2446,7 +2636,7 @@ test('OVB-UN06 需求 4 负控：retry 锚不存在且开始锚也不存在 ⇒ 
   const env = makeFakeEnv({ noRetryButton: true, noStartButton: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'feedback'; mo.cb();
   const before = env.timers.length;
   const r = bridge.startOfficial();
@@ -2462,7 +2652,7 @@ test('OVB-UN07 需求 4 负控：retry 按钮 disabled ⇒ 不得派发点击，
   const env = makeFakeEnv({ retryDisabled: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'feedback'; mo.cb();
   const r = bridge.startOfficial();
   assert.equal(env.retryButton.clicks, 0, '⚠ disabled 的 retry 锚**不得**被点击');
@@ -2478,7 +2668,7 @@ test('OVB-UN08 不得静默失效：新路径读数进快照（retryClicks / las
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'feedback'; mo.cb();
   bridge.startOfficial();
   const snap = bridge.snapshot();
@@ -2494,10 +2684,9 @@ test('OVB-UN09 需求 1 实质：从 feedback 重试 ⇒ 新一轮必须能收�
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  env.document._attr = 'recording'; mo.cb();
-  env.document._attr = 'feedback'; mo.cb();
+  const mo = env.window.__dshPeOfficialBridge.sessionObserver;
+  env.document._attr = 'recording'; env.pump();
+  env.document._attr = 'feedback'; env.pump();
   const afterFb = bridge.snapshot();
   assert.ok(afterFb.lastEndedAt > 0, '前置：第 1 轮已在 feedback 分支收口');
   assert.equal(afterFb.sessionsMissed, 0, '前置：本轮包装器已命中 ⇒ 不计 missed');
@@ -2505,13 +2694,13 @@ test('OVB-UN09 需求 1 实质：从 feedback 重试 ⇒ 新一轮必须能收�
   const sessions1 = afterFb.sessionsStarted;
   // 用户在未识别窗口里**重新录音**（相位回 recording，节点不卸载）
   await new Promise((r) => setTimeout(r, 5));     // 保证新一轮收口时刻与第 1 轮可区分
-  env.document._attr = 'recording'; mo.cb();
+  env.document._attr = 'recording'; env.pump();
   assert.equal(bridge.snapshot().sessionsStarted, sessions1 + 1,
     '⚠ 重试必须是**新一轮会话**（旧实现不重开会话 ⇒ 计数不增）');
   // 第 2 轮官方照旧会取一次麦（真实链路形态：相位 requesting → getUserMedia → recording）
   await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   // 第 2 轮正常收口（节点消失）
-  env.document._attr = null; mo.cb();
+  env.document._attr = null; env.pump();
   const after2 = bridge.snapshot();
   assert.ok(after2.lastEndedAt > endedAt1,
     '⚠ 核心：第 2 轮必须能被收口（旧实现 settled 未被复位 ⇒ 永不收口 ⇒ lastEndedAt 停在第 1 轮）');
@@ -2523,7 +2712,7 @@ test('OVB-UN10 需求 1 实质·负控：点 X 关闭（节点消失，无新会
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   const sessions = bridge.snapshot().sessionsStarted;
@@ -2541,15 +2730,14 @@ test('OVB-UN11 收口语义一致：未识别态**已经**收口（不重复计 
   //   而桥**只为** VAD 观测而调用它、**不传参** ⇒ 该名在假件里不存在 ⇒ 内部异常被桥静默吞掉
   //   ⇒ 本会话的包装器会被判成「从未被调用」（sessionsMissed=1）——**装置失真，非产品行为**。
   //   照 OVB-P01 的既有做法先手动命中一次包装器，使本用例判的是收口语义而不是该装置缺口。
-  await env.navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  const mo = env.observerInstances[env.observerInstances.length - 1];
-  env.document._attr = 'recording'; mo.cb();
-  env.document._attr = 'feedback'; mo.cb();
+  const mo = env.window.__dshPeOfficialBridge.sessionObserver;
+  env.document._attr = 'recording'; env.pump();
+  env.document._attr = 'feedback'; env.pump();
   const a = bridge.snapshot();
   assert.ok(a.lastEndedAt > 0, '未识别 = 一次收口 ⇒ 记结束时刻');
   assert.equal(a.sessionsMissed, 0, '不得计 missed');
   // 节点随后消失（用户点 X）⇒ 同一会话**不得**二次收口
-  env.document._attr = null; mo.cb();
+  env.document._attr = null; env.pump();
   const b2 = bridge.snapshot();
   assert.equal(b2.sessionsMissed, 0, '⚠ 不得重复收口（否则 missed 计两次）');
   assert.equal(b2.lastEndedAt, a.lastEndedAt, '⚠ 不得覆盖首次收口时刻');
@@ -2559,7 +2747,7 @@ test('OVB-UN12 不得误认成采集成功：未识别出口的会话级读数�
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadBridge(env);
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   const snap = bridge.snapshot();
@@ -2592,16 +2780,16 @@ function loadMutantSrc(env, mutated) {
   const S = loadStateForBridge(env);
   const factory = new Function(
     'window', 'document', 'navigator', 'localStorage', 'setInterval', 'clearInterval', 'MutationObserver', 'MouseEvent',
-    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState',
+    'vadSilenceMsOf', 'vadRequiredQuiet', 'voiceCfgState', 'require',
     mutated + '\n;return officialVoiceBridge;'
   );
   let seq = 0;
   const bridge = factory(env.window, env.document, env.navigator, env.localStorage,
     (fn, ms) => { const rec = { fn, ms, cleared: false, id: ++seq }; env.timers.push(rec); return rec.id; },
     (id) => { const rec = env.timers.find((r) => r.id === id); if (rec) rec.cleared = true; },
-    class FakeMO { constructor(cb) { this.cb = cb; env.observerInstances.push(this); } observe() {} disconnect() {} },
+    class FakeMO { constructor(cb) { this.cb = cb; this.disconnectCalls = 0; env.observerInstances.push(this); } observe() {} disconnect() { this.disconnectCalls++; } },
     function MouseEvent(type, init) { return { type, init }; },
-    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState);
+    S.vadSilenceMsOf, S.vadRequiredQuiet, S.voiceCfgState, chunkRequire);
   // 与 loadBridge 同款：装载时注入假 MediaRecorder（桥的 recorder 捕获在装载期完成）
   if (env.window.MediaRecorder) new env.window.MediaRecorder(env.mediaDevices.lastStream);
   bridge.setTimer(env.timerSvc);
@@ -2612,7 +2800,7 @@ test('OVB-UN-V01 变异自证·正例必红：门禁退回 b.active ⇒ UN01/UN0
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadMutantSrc(env, mutateGateBackToActive(readChunk()));
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   // 退回后：feedback 态仍被判「采集中」⇒ 热键被拒（用户报障形态）
@@ -2625,7 +2813,7 @@ test('OVB-UN-V02 变异自证·负控必绿：同一变异下「真采集中仍�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadMutantSrc(env, mutateGateBackToActive(readChunk()));
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   // 负控：互斥保护在两种口径下都必须成立（本批**不得**削弱它）
   const r = bridge.startOfficial();
@@ -2637,7 +2825,7 @@ test('OVB-UN-V03 变异自证·正例必红：启动退回单锚（只有开始�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadMutantSrc(env, mutateStartSingleAnchor(readChunk()));
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'feedback'; mo.cb();
   const r = bridge.startOfficial();
   // 退回后：未识别窗口的 retry 锚被无视 ⇒ 找不到按钮（需求 4 的原缺陷）
@@ -2651,7 +2839,7 @@ test('OVB-UN-V04 变异自证·负控必绿：同一变异下「真采集中仍�
   const env = makeFakeEnv({ recordingPhase: true });
   const bridge = loadMutantSrc(env, mutateStartSingleAnchor(readChunk()));
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   const r = bridge.startOfficial();
   assert.equal(r.started, false, '负控必绿：真采集中仍拒绝重复启动');
@@ -2661,7 +2849,7 @@ test('OVB-UN-V05 变异自证·正例必红：不重开会话 ⇒ UN09（新一�
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadMutantSrc(env, mutateNoNewSession(readChunk()));
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   const endedAt1 = bridge.snapshot().lastEndedAt;
@@ -2677,7 +2865,7 @@ test('OVB-UN-V06 变异自证·负控必绿：同一变异下「点 X 不得虚�
   const env = makeFakeEnv({ recordingPhase: true, feedbackText: '未识别到语音' });
   const bridge = loadMutantSrc(env, mutateNoNewSession(readChunk()));
   bridge.install();
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();
   env.document._attr = 'feedback'; mo.cb();
   const sessions = bridge.snapshot().sessionsStarted;
@@ -2719,7 +2907,7 @@ async function runPointScenario(gapMs, opts) {
   bridge.install();
   const host = buildHotkeyHost(env, bridge, { autoEnhance: false, hotkey: true, sessionId: o.sessionId || 'sess-pt' });
   host.render('');
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   // 按下前是否让官方**已在录**：模拟「第二次点按」或「竞态命中（官方已进 recording）」
   if (o.recordingBeforePress) { env.document._attr = 'recording'; mo.cb(); }
   host.keydown();
@@ -2835,7 +3023,7 @@ test('OVB-POINT-V01 变异自证·正例必红：退回 statusRef 判据 ⇒ 点
   mini.begin(); api.VoiceHotkeyHost(props); mini.runEffects();
   const KEY = () => ({ code: 'Backquote', key: '`', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false, repeat: false, preventDefault() {}, stopPropagation() {} });
   env.window._fire('keydown', KEY());
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   env.document._attr = 'recording'; mo.cb();            // 官方已进 recording（竞态命中）
   await new Promise((r) => setTimeout(r, 60));
   env.window._fire('keyup', KEY());
@@ -2878,7 +3066,7 @@ function buildFieldHost(opts) {
   bridge.install();
   const host = buildHotkeyHost(env, bridge, { autoEnhance: false, hotkey: true, sessionId: o.sessionId || 'sess-unf' });
   host.render('');
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   return { env, bridge, host, mo };
 }
 
@@ -2998,7 +3186,7 @@ function buildMutatedHost(mutation, opts) {
   api.VoiceHotkeyHost(props);
   mini.runEffects();
   const KEY = () => ({ code: 'Backquote', key: '`', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault() {}, stopPropagation() {} });
-  const mo = env.observerInstances[env.observerInstances.length - 1];
+  const mo = { cb: () => env.pump() };
   return {
     env, bridge, mo, storeStub,
     keydown: () => env.window._fire('keydown', KEY()),

@@ -33,7 +33,8 @@ Restart DSH afterwards (also after updating or removing) — the ✨ button appe
 
 **Voice input enhancement** (transcription is provided by DSH's official `speechToText`; the plugin ships no engine and downloads no models)
 
-- **Two entry points** — the official 🎤 button, or the plugin hotkey (tap to start / tap to stop; long-press = hold to talk, release to stop)
+- **Two entry points** — the official 🎤 button (click to start / click to stop), or the plugin hotkey (tap to start / tap to stop; long-press = hold to talk, release to stop)
+  ⚠️ Long-press applies to the **plugin hotkey** only; the official button only responds to clicks (enable and record a hotkey in plugin settings first)
 - **Stop on silence** — auto-stop with a configurable 1-5 s silence window (default 2 s), can be turned off entirely
 - **Filler removal** — local rule-based cleanup of filler words / repeats / drawn-out sounds; no rewriting, no additions (on by default)
 - **Transcript correction** — word-level fixes after transcription, voice path only (off by default)

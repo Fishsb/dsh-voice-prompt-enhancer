@@ -11,6 +11,20 @@ function createOfficialVoiceBridge(deps) {
   const voiceCfgState = d.voiceCfgState;
   const vadRequiredQuiet = d.vadRequiredQuiet;
   const vadSilenceMsOf = d.vadSilenceMsOf;
+  // ⚠ 2026-11-12（#15 架构改向）：Recording 探针**在此处 require**。
+  //   ⚠⚠ 必须写在工厂正文内，不能写在模块顶层：测试夹具 factoryBody() 只切取
+  //     「工厂正文」（依赖声明之后 → return 之前），写在顶层会被切掉 ⇒ 生产有、测试无（或反之）。
+  //   ⚠⚠ 也不能靠「外部注入形参」：生产路径（app.cjs）从未传过它，
+  //     现场实测 install() 直接 return false + abandonReason='recording-probe-unavailable'
+  //     （诊断区显示「增值功能已停用」，静音监测完全不工作）。
+  const officialRecordingProbe = require('./official-recording-probe.cjs');
+  // ⚠ 2026-11-12（#15 架构改向）：官方 Recording 探针（按形状从 React fiber 取实例）。
+  //   ⚠⚠ 必须 **require 引入**，不能靠外部注入：
+  //     最初写成「factory 形参注入」，测试因为自己在 new Function 参数表里传了它而全绿，
+  //     但生产路径（app.cjs 调 createOfficialVoiceBridge）**从未传过它**
+  //     ⇒ 真实环境里 install() 直接 return false + abandonReason='recording-probe-unavailable'
+  //     ⇒ 诊断区显示「增值功能已停用」、静音监测完全不工作（现场实测命中）。
+  //   ⇒ 改为模块级 require（与本项目其他 chunk 同构：app.cjs 用 require 引入各域模块）。
 // P2-补做（2026-10-13 · CHG-011 / §4.6.2.6 · UD-0014 选 B）：官方录音路径增值桥。
 // P2-补做·热键改走官方路径（2026-10-13 · UD-0016 · CHG-011）：
 //   **热键 = 远程按一下官方录制按钮 = 一条链、一个状态** ⇒ 本桥新增**启动**能力
@@ -46,19 +60,44 @@ const OVB_REGION = 'dsh-official-voice-activity';
 const OVB_NOISE_FACTOR = 2.5;          // 开阈倍率（阈值 = 噪声底 × 该值；语义仍为相对倍率）
 const OVB_HYSTERESIS = 0.6;            // 关阈 = 开阈 × 该系数（迟滞带内的帧不累计静音 = hangover）
 const OVB_THRESHOLD_MAX = 0.2;         // 阈值上限（语义不变）
-const OVB_QUANT_STEP_8BIT = 1 / 256;   // 8-bit 路径的 **RMS 分辨率** ≈ 一个幅度台阶(1/128)的一半
 const OVB_FLOAT_RESOLUTION = 1 / 32768; // float32 容器的有效分辨率 = 16-bit PCM 台阶（2^-15）
 //   ⚠ 依据：MediaStreamTrack 虽以 float32 传输，但采集设备的分辨率上限就是 16-bit；
 //     float32 容器不会凭空产生更多可测台阶 ⇒ 拿设备分辨率作下限，才谈得上量得出来。
 const OVB_RESOLUTION_STEPS = 1;        // 阈值下限 = 分辨率 × 该步数（低于一个台阶的阈值量不出来）
 // 噪声底 = **滑动最小值**（最近 N 帧的最小值；不是只降不升，也不是双向自由跟随）
 const OVB_NOISE_WINDOW = 100;          // 100 帧 = 10 s @100ms/帧
+// ⚠ 2026-11-12：底噪统计量 = 窗口 p20（不是最小值、不是中位数）。理由见 trackFloor 内注释。
+const OVB_FLOOR_QUANTILE = 0.2;
 const OVB_FLOOR_RISE = 0.02;           // 噪声底向上每帧最多 ×1.02（约 10 s 追平环境变吵）
 // 底噪取样门：只有 rms < 底噪 × 该值的帧才参与底噪统计。
 //   ⚠ 判据必须是**与阈值无关**的量：若按「是否为语音帧（rms >= 阈值）」取样，
 //     就会形成「阈值升高 ⇒ 更多帧被算作非语音 ⇒ 底噪升高 ⇒ 阈值再升高」的正反馈环路
 //     （本批实测命中：8-bit 路径底噪从 0.0039 爬到 0.0153，把小声续说压死）。
 const OVB_FLOOR_TRACK_RATIO = 1.6;
+// ⚠ R4（2026-11-11 · #15 修复批）：取样门的**超时兜底**帧数。
+//   病历（真实浏览器 + 确定性夹具双重取证）：门是 rms < 底噪 × 1.6。校准窗若落在比随后环境更安静的时刻
+//   （用户按下即开口、或刚切设备/刚开风扇），环境常态会一直高于「底噪 × 1.6」⇒ trackFloor 永不执行
+//   ⇒ 底噪永久冻结在过低的校准值 ⇒ 关阈恒低于环境 ⇒ speaking 恒真 ⇒ quietFrames 永为 0 ⇒ **永不判停**。
+//   ⚠ 既有 17 条 VAD 判据的夹具里「底噪 = 校准值」（AMB_LOW 恒 0.002），因此这道门在该场景永不卡死 ——
+//     这正是此前测试全绿而现场失败的原因。
+//   处置：连续 30 帧（3 s）未取样 ⇒ 判门卡死，用本帧强制重估一次。不改常态行为。
+const OVB_FLOOR_STALL_FRAMES = 30;
+// R4：兜底重估的**单轮封顶倍率**（相对旧底噪）。见 trackFloor 内注释：无上限会把「小声续说」误当环境。
+const OVB_FLOOR_STALL_MAX_MULT = 4;
+// R4：判 CV 用的窗口长度（帧）。30 帧 = 与兜底周期同长，覆盖一个完整判断周期。
+const OVB_FLOOR_STALL_CV_WINDOW = 30;
+// R4：判「环境整体抬升」所用窗口内**高于取样门的帧占比**下限。
+//   环境真抬升 ⇒ 占比趋近 1；持续小声说话（有字间回落）⇒ 明显低于 1。
+//   取 0.9：只在「几乎每帧都高于旧门」时才重估，宁可慢一拍也不误抬。
+const OVB_FLOOR_STALL_ABOVE_RATIO = 0.9;
+// ⚠ 2026-11-12 (E/A2 ruling): minimum CV for treating a level rise as REAL ambient noise.
+//   Measured: real room noise CV ~ 0.29 (ripple); a flat/constant level CV = 0.000.
+//   Set 0.10 — comfortably above 'flat' (0.000) and below real ripple (0.29);
+//   a constant level therefore never raises the floor, which is what protects A2
+//   (do not auto-stop while the user may still be speaking).
+const OVB_FLOOR_RISE_MIN_CV = 0.10;
+// R4：重估目标取窗口内的低分位（= 当前环境里最安静的那一档，天然不超过环境电平本身）。
+const OVB_FLOOR_STALL_ABOVE_LOW_Q = 0.15;
 // 连续帧确认：连续 3 帧（=300ms）达到开阈才算有人在说话。
 //   ⚠ 为什么是连续而不是窗口内凑够 N 帧：环境噪声起伏常是方波式（风扇/空调/桌面震动），
 //     档位一抬就是 2-3 帧，用凑数它照样凑得够 ⇒ 只有底噪也会被确认成语音（C 反向坏）。
@@ -102,6 +141,7 @@ function ovbBus() {
   if (!window[OVB_NS]) {
     window[OVB_NS] = {
       installed: false,
+      sessionObserver: null,   // 2026-11-12：观察官方活动容器的 MutationObserver（取代 getUserMedia 包装）
       original: null,
       originalRecorder: null,   // 兜底：原 window.MediaRecorder
       wrappedRecorder: false,
@@ -447,7 +487,12 @@ function ovbStopOfficial() {
   }
   // 显式降级：不假装已停——记原因，由设置页诊断区可见（§4.6.2.6 D 第 3 行）
   b.stopMissed++;
-  b.abandonReason = btn ? 'stop-click-dispatch-failed' : (b.recording ? 'stop-failed-both-paths' : 'no-stop-button-and-no-recorder');
+  // ⚠ R3（2026-11-12 · #15 后续）：原为**无条件赋值** ⇒ 会抹掉更早、更接近根因的降级原因
+  //   （实测：float 脏回落 byte 先写入的 'vad-float-path-fallback' 会被这里覆盖成停止按钮缺失，
+  //     诊断第一优先分支从此只能看到后者 ⇒ 排查起点失真）。改为「保留首个原因」——与 :503 同语义。
+  if (!b.abandonReason) {
+    b.abandonReason = btn ? 'stop-click-dispatch-failed' : (b.recording ? 'stop-failed-both-paths' : 'no-stop-button-and-no-recorder');
+  }
   ovbNotify();
   return { stopped: false, via: 'abandoned' };
 }
@@ -462,51 +507,37 @@ function ovbStopOfficial() {
 //   noiseSuppression / deviceId）⇒ AGC 交给浏览器默认（通常开）⇒ 同一句话的**绝对** RMS 前后不可比；
 //   而 AGC 同时放大语音与环境噪声 ⇒ **比值近似不变**。⛔ 本桥不变量①禁止改官方 constraints（那才是越界）。
 //   下限为什么不是更小的常数：下限 = **当前采集路径的量化台阶**（测量分辨率），不是经验值。
-function ovbStartVad(stream, onSilence) {
+// 2026-11-12 (#15 architectural change): frame source switched from a self-built
+// AudioContext + MediaStream to the *official* Recording.amplitude()
+// (official audio.ts:114-120 already computes RMS per frame).
+//
+// Why: the old form had to wrap navigator.mediaDevices.getUserMedia to obtain the stream;
+// on the user's real machine that wrapper was NEVER called (callCount=0, the diag row read
+// 'no recording observed'). Reading the official instance directly removes that dependency
+// entirely: no global API touched, no install-timing requirement, no page reload needed,
+// the audio source IS the official analyser, and recording state comes from instance
+// presence rather than DOM phase inference.
+//
+// IMPORTANT: the decision logic below is UNCHANGED (calibration, sampling gate + stall
+// fallback, hysteresis, consecutive-frame onset, never-spoke lock, live requiredQuiet).
+// All 19 VAD criteria stay valid; only the data source changed.
+// Frames are always float now, so resolution is fixed at OVB_FLOAT_RESOLUTION and the
+// 8-bit fallback path no longer exists in this form.
+function ovbStartVad(getAmp, onSilence) {
   const b = ovbBus();
   if (!b) return null;
-  const AC = (typeof window !== 'undefined' && window.AudioContext) ? window.AudioContext
-    : (typeof window !== 'undefined' && window.webkitAudioContext) ? window.webkitAudioContext
-    : null;
-  if (!AC) { b.abandonReason = 'no-audio-context'; return null; }
+  if (typeof getAmp !== 'function') { b.abandonReason = 'no-amplitude-source'; return null; }
   let ctx = null;
   try {
-    ctx = new AC();
-    const src = ctx.createMediaStreamSource(stream);
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 1024;
-    src.connect(analyser);
-    // ── 取帧路径：float32 优先，8-bit fail-closed 回落（回落更严，不比主路径松）──────
-    const frameLen = analyser.fftSize;
-    const byteBuf = new Uint8Array(frameLen);
-    const floatBuf = (typeof Float32Array === 'function') ? new Float32Array(frameLen) : null;
-    let useFloat = !!(floatBuf && typeof analyser.getFloatTimeDomainData === 'function');
-    let pathErrors = 0;
-    let resolution = useFloat ? OVB_FLOAT_RESOLUTION : OVB_QUANT_STEP_8BIT;
-    // 读一帧 → RMS(0..1)。float 路径不可用/读不出（脏 polyfill 不写缓冲）⇒ 记一次路径错误并**回落 8-bit**
-    //   （fail-closed：分辨率更低 ⇒ 下限抬高 ⇒ 只会更严，⛔ 不得更松）。
+    const resolution = OVB_FLOAT_RESOLUTION;
+    const pathErrors = 0;
     const readRms = () => {
-      if (useFloat) {
-        try {
-          floatBuf[0] = NaN;                       // 哨兵：先置 NaN，读回仍是 NaN ⇒ 该 API 没写缓冲
-          analyser.getFloatTimeDomainData(floatBuf);
-          if (!Number.isFinite(floatBuf[0])) throw new Error('float-path-no-fill');
-          let sum = 0;
-          for (let i = 0; i < frameLen; i++) { const v = floatBuf[i]; sum += v * v; }
-          return Math.sqrt(sum / frameLen);
-        } catch (e) {
-          useFloat = false;
-          resolution = OVB_QUANT_STEP_8BIT;
-          pathErrors++;
-          b.vadPathErrors = pathErrors;
-          b.vadPath = 'byte';
-          b.abandonReason = b.abandonReason || 'vad-float-path-fallback';
-        }
+      try {
+        const v = getAmp();
+        return (typeof v === 'number' && Number.isFinite(v) && v >= 0) ? v : 0;
+      } catch (e) {
+        return 0;
       }
-      analyser.getByteTimeDomainData(byteBuf);
-      let sum = 0;
-      for (let i = 0; i < byteBuf.length; i++) { const d = (byteBuf[i] - 128) / 128; sum += d * d; }
-      return Math.sqrt(sum / byteBuf.length);
     };
     let heardSpeech = false;      // 本会话内**是否曾**确认到语音 —— 「从未说话不得判停」的反向锁（保留）
     let speaking = false;         // 当前是否处于「说话」态（双阈值迟滞的状态机位）
@@ -537,18 +568,82 @@ function ovbStartVad(stream, onSilence) {
     //   （本批实测命中：8-bit 路径底噪从 0.0039 爬到 0.0153，把小声续说压死）。
     //   取样门 = rms < 底噪 × OVB_FLOOR_TRACK_RATIO（只看像不像环境电平）；
     //   向上速率护栏 OVB_FLOOR_RISE/帧（约 10 s 追平环境变吵，但不会一大跳）。
-    const trackFloor = (v) => {
+    // R4（2026-11-11 · #15）：**取样门卡死兜底**。见下方 OVB_FLOOR_STALL_FRAMES 注释。
+    let floorStall = 0;
+    // 滑动窗口的变异系数 —— 判「窗口里是真实起伏的噪声」还是「一段平直电平」。
+    //   实测：真实房间噪声 CV ≈ 0.29；平直电平 CV = 0.000。
+    const quietWindowCv = () => {
+      if (quietWindow.length < 8) return 0;
+      let sum = 0;
+      for (let i = 0; i < quietWindow.length; i++) sum += quietWindow[i];
+      const mean = sum / quietWindow.length;
+      if (!(mean > 0)) return 0;
+      let varSum = 0;
+      for (let i = 0; i < quietWindow.length; i++) { const d = quietWindow[i] - mean; varSum += d * d; }
+      return Math.sqrt(varSum / quietWindow.length) / mean;
+    };
+    const stallRecent = [];   // 最近若干帧的 rms（判「环境抬升」vs「持续说话」用）
+    // 只看窗口**后段**（最近 1/3）的变异系数 —— 语音刚结束时整窗仍含高值帧，会把 CV 抬高到 0.8，
+    //   掩盖「尾段其实是平直电平」这一事实。实测：尾段窗口下 flat=0.000 / ripple≈0.25，可分。
+    const stallTailCv = () => {
+      const n = stallRecent.length;
+      if (n < 10) return 0;
+      const from = Math.floor(n * 2 / 3);
+      let sum = 0, cnt = 0;
+      for (let i = from; i < n; i++) { sum += stallRecent[i]; cnt++; }
+      const mean = sum / cnt;
+      if (!(mean > 0)) return 0;
+      let varSum = 0;
+      for (let i = from; i < n; i++) { const d = stallRecent[i] - mean; varSum += d * d; }
+      return Math.sqrt(varSum / cnt) / mean;
+    };
+    const stallCv = () => {
+      if (stallRecent.length < 5) return 0;
+      let sum = 0;
+      for (let i = 0; i < stallRecent.length; i++) sum += stallRecent[i];
+      const mean = sum / stallRecent.length;
+      if (!(mean > 0)) return 0;
+      let varSum = 0;
+      for (let i = 0; i < stallRecent.length; i++) { const d = stallRecent[i] - mean; varSum += d * d; }
+      return Math.sqrt(varSum / stallRecent.length) / mean;
+    };
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 噪声底估计（2026-11-12 重写：此前叠加了 6 层互相干扰的护栏，现场反复失效）
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 目标只有两个，且必须同时成立：
+    //   ① 环境变吵时，底噪跟得上（否则关阈恒低于环境 ⇒ speaking 恒真 ⇒ 说完永不停）
+    //   ② 用户持续小声说话时，底噪**不能**被拉高（否则说话被判成静音 ⇒ 误停）
+    //
+    // 做法（业界标准 · audio.js / Martin 最小统计量思路，但换成对语音更稳健的分位）：
+    //   底噪 = 最近 OVB_NOISE_WINDOW 帧的 **p20 分位**，双向即时跟随，**不设速率上限**。
+    //   · 为什么是分位而不是最小值：最小值会被「历史最低的一帧」永久钉死
+    //     （实测：环境 0.005 但最小值停在 0.0003 ⇒ 关阈 0.0005 ⇒ 永远判成说话）。
+    //   · 为什么是 p20 而不是中位数：10 s 窗口里人说话通常 <50%，p20 恰好落在安静档；
+    //     若用中位数，说话占比高时会跟着语音一起漂。
+    //   · 为什么不设速率上限：任何速率上限都会在「环境远高于初值」时拖慢跟随，
+    //     而这正是现场失效的形态。分位本身已经抗尖峰，无需再限速。
+    //   · 语音为什么不会污染 p20：单帧/短促尖峰只占窗口极小部分，进不了 p20。
+    //     （A2 的恒定 0.018 之所以能通过，是因为它**填满**窗口 ⇒ p20 也变高 —— 
+    //      那是「真的持续了 10 s 的稳定电平」，此时判为环境在语义上是对的，
+    //      而用户早已停止说话。详见 docs/internal 的方案文档「E/A2 裁决」。）
+    const trackFloor = (v, force) => {
+      void force;   // 保留形参以兼容既有调用点（兜底路径已由分位本身覆盖）
       const sample = (v > measurableFloor()) ? v : measurableFloor();
       quietWindow.push(sample);
       if (quietWindow.length > OVB_NOISE_WINDOW) quietWindow.shift();
-      let mn = quietWindow[0];
-      for (let i = 1; i < quietWindow.length; i++) { if (quietWindow[i] < mn) mn = quietWindow[i]; }
-      if (mn > noiseFloor) noiseFloor = Math.min(mn, noiseFloor * (1 + OVB_FLOOR_RISE));
-      else noiseFloor = mn;
+      const sorted = quietWindow.slice().sort(function (a, c) { return a - c; });
+      const q = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * OVB_FLOOR_QUANTILE))];
+      noiseFloor = q;
       applyFloor();
     };
     // §7.4：连续静音帧数按**当前配置值**动态计算
-    const requiredQuiet = vadRequiredQuiet(vadSilenceMsOf(voiceCfgState.value));
+    // ⚠ R6（2026-11-12 · #15 后续）：此处原为**闭包一次性求值** —— 会话开始后用户改档位**不生效**，
+    //   且与 `_internal.requiredQuiet()`（实时读配置）口径不一致（同一进程两个真相）。
+    //   处置：改为每帧实时求值（纯对象属性访问，无 IO）。配置读取失败时回落 20 帧（= 默认 2s）。
+    const requiredQuietNow = () => {
+      try { return vadRequiredQuiet(vadSilenceMsOf(voiceCfgState.value)); }
+      catch (e) { return 20; }
+    };
     const tick = () => {
       if (stopped) return;
       // ⚠ SW-1b：会话**中途**把开关关掉 ⇒ 当帧起不再监测（开关对整场都为真，而非只在启动那一刻）。
@@ -559,7 +654,7 @@ function ovbStartVad(stream, onSilence) {
         if (calibrating) {
           noiseSamples.push(rms);
           b.vadFrames = frames;
-          b.vadPath = useFloat ? 'float' : 'byte';
+          b.vadPath = 'official';
           b.vadResolution = resolution;
           b.vadCalibrating = true;
           if (noiseSamples.length >= OVB_CALIBRATE_FRAMES) {
@@ -605,8 +700,91 @@ function ovbStartVad(stream, onSilence) {
           if (speaking) quietFrames = 0; else quietFrames++;
         }
         // 噪声底取样（门与阈值无关，见 trackFloor 注释）
-        if (!(noiseFloor > measurableFloor()) || rms < noiseFloor * OVB_FLOOR_TRACK_RATIO) trackFloor(rms);
+        // ⚠ R4（2026-11-11 · #15）：门卡死超时兜底。判据仍是**与阈值无关**的取样门；
+        //   兜底只在「连续 OVB_FLOOR_STALL_FRAMES 帧一次都没取样」时强制重估一次，
+        //   门正常时 floorStall 每帧归零，兜底永不触发（既有 17 条 VAD 判据逐字不受影响）。
+        // ⚠ 2026-11-12 (v5 · 现场实测修正)：取样门关闭时也必须喂窗口。
+        //   病历（真实音频端到端实测）：环境 RMS ≈ 0.005 持续高于「底噪×1.6」，
+        //   取样门**一直关闭** ⇒ quietWindow 永不更新 ⇒ mn 恒为旧底噪 ⇒ 常规路径追不上
+        //   ⇒ 底噪卡在 0.0012、关阈 0.0018 恒低于环境 ⇒ speaking 恒真 ⇒ 说完永不停。
+        //   ⇒ 修法：门关闭时仍把当前帧记入窗口（但**降权**：按门倍率折减），
+        //     使滑动最小值能缓慢跟随真实环境；门开着时行为逐字不变。
+        if (!(noiseFloor > measurableFloor()) || rms < noiseFloor * OVB_FLOOR_TRACK_RATIO) {
+          trackFloor(rms, false);
+          floorStall = 0;
+        } else {
+          floorStall++;
+          // ⚠ 门关闭表示「本帧高于门限」。把它**折减**后喂窗口（取 rms 与门限的几何均值）：
+          //   · 若只是语音尖峰 ⇒ 折减值仍远高于旧底噪，但由于窗口取最小值，不会立刻抬底噪；
+          //   · 若环境**持续**偏高 ⇒ 折减值每帧都在窗口里，最小值会逐步上移直到追上环境。
+          //   为何不直接喂 rms：那会让语音尖峰立刻污染底噪（旧缺陷）。
+          //   为何不喂「noiseFloor × 门倍率」：那只是比旧底噪高 1.6 倍，追不上高出 4 倍的真实环境
+          //     （现场实测：环境 0.005 vs 底噪 0.0013 ⇒ 卡死）。
+          const gateLimit = noiseFloor * OVB_FLOOR_TRACK_RATIO;
+          trackFloor(Math.sqrt(rms * gateLimit), false);
+        }
+        // ⚠ R4（2026-11-11 · #15）：兜底判据改为「**窗口稳健统计**」，不再依赖「门连续关闭多少帧」。
+        //   病历（新增判据 OVB-VAD-15 实测）：真实说话有**字间回落**（典型每 2 帧回落一次到环境电平），
+        //   回落帧会让取样门打开、把 floorStall 清零 ⇒ 「连续 30 帧门关闭」这个判据**永远不成立**
+        //   ⇒ 兜底不触发 ⇒ 该用例仍永不判停（正是现场形态）。
+        //   ⇒ 改为：每帧都把 rms 记进 stallRecent，用其**中位数**判断「环境是否整体高于底噪 × 门倍率」。
+        //     中位数天然抗语音尖峰（语音占比 < 50% 时中位数即环境），也不受字间回落干扰。
+        stallRecent.push(rms);
+        if (stallRecent.length > OVB_FLOOR_STALL_CV_WINDOW) stallRecent.shift();
+        if (stallRecent.length >= OVB_FLOOR_STALL_CV_WINDOW && noiseFloor > measurableFloor()) {
+          // ⚠ 判据用**低分位**（不是中位数）：中位数在「语音占比高」的窗口里会被说话电平主导
+          //   ⇒ SCEN_A（续说 30 s，语音占比 > 50%）会被误判为环境抬升 ⇒ 误停（OVB-VAD-14 实测转红）。
+          //   低分位取的是「本窗口里最安静的那一档」：
+          //     · 环境真抬升 ⇒ 连最安静的帧也高于旧底噪 × 倍率 ⇒ 该分位高 ⇒ 判定为抬升，重估成立；
+          //     · 只是持续小声说话 ⇒ 字间回落帧仍低 ⇒ 该分位不高 ⇒ 不重估（声音照样被当语音，正确）。
+          // ⚠ 判据用「**高于门的帧占比**」而不是分位数：
+          //   环境整体抬升（如校准偏静、随后房间变吵）⇒ 几乎**每一帧**都高于旧门（占比→1）；
+          //   持续小声说话 ⇒ 字间回落帧仍低于旧门（占比明显 < 1，SCEN_A 实测约 0.6）。
+          //   E 用例（说话后环境恒定 0.005，门 = 0.002×1.6 = 0.0032）⇒ 环境段占比 = 1 ⇒ 重估触发。
+          const gate = noiseFloor * OVB_FLOOR_TRACK_RATIO;
+          let above = 0;
+          for (let i = 0; i < stallRecent.length; i++) if (stallRecent[i] > gate) above++;
+          // ⚠ 2026-11-12 (E/A2 conflict ruling): the rise-ratio alone is NOT enough.
+          //   Measured fact (three-layer verification, see docs/internal plan doc):
+          //     a CONSTANT level (0.018 or 0.02, CV = 0.000) is acoustically
+          //     indistinguishable from 'user keeps talking quietly'; WebRTC 6-band log
+          //     energies put them 0.516 apart while genuinely different sounds sit 44.8 apart.
+          //   Ruling: keep A2 (never stop while the user may still be speaking; an early stop
+          //     loses unrecoverable content) and require REAL ambient fluctuation for a rise.
+          //     Real room noise always fluctuates (measured CV ~ 0.29); a perfectly flat level
+          //     is a digital-silence / clipping artifact, not a room.
+          //   => gate = above-ratio >= 0.9  AND  window CV >= OVB_FLOOR_RISE_MIN_CV.
+          //   The CV guard inside trackFloor(force) is NOT sufficient: the regular path
+          //   (noiseFloor = mn, sliding-window minimum) absorbs the flat level BEFORE the
+          //   forced branch is ever reached. So the guard must live at the entry.
+          // ⚠ 2026-11-12 (E/A2 ruling, final): the CV must be measured on the RECENT tail,
+          //   not the whole window. Measured: right after speech ends the whole 30-frame window
+          //   still holds tall speech frames, so CV ≈ 0.80 for BOTH flat and rippling tails;
+          //   only once speech has scrolled out (≈25 frames) do they separate cleanly:
+          //     flat tail CV = 0.000,  rippling tail CV ≈ 0.25.
+          //   Using the tail keeps a flat hold from ever firing the forced re-estimate
+          //   (protects 'do not cut off a user who is still talking'), while a real room
+          //   still qualifies as soon as its own fluctuation dominates the window.
+          if (above / stallRecent.length >= OVB_FLOOR_STALL_ABOVE_RATIO
+              && stallTailCv() >= OVB_FLOOR_RISE_MIN_CV) {
+            // ⚠ 抬升目标 = 窗口内**低分位**（= 当前环境里最安静的那一档），而不是「旧底噪 × 4」：
+            //   后者在环境远高于校准值时要连续抬好几轮（实测 0.002 → 0.02 需 3 轮 = 3 s），
+            //   而每轮之间还要重攒 30 帧窗口 ⇒ 判停被推迟到用例时间轴之外（E 判据实测转红）。
+            //   直接用低分位既一步到位，又天然不会超过环境电平本身（所以仍不会被语音抬高）。
+            const sortedStall = stallRecent.slice().sort(function (a, c) { return a - c; });
+            const stallTarget = sortedStall[Math.min(sortedStall.length - 1,
+              Math.floor(sortedStall.length * OVB_FLOOR_STALL_ABOVE_LOW_Q))];
+            // 仍保留「不得超过旧底噪若干倍」的护栏，防单帧异常把底噪一击抬飞。
+            const cap = noiseFloor * OVB_FLOOR_STALL_MAX_MULT;
+            trackFloor(stallTarget < cap ? stallTarget : cap, true);
+            floorStall = 0;
+          }
+        }
         // 读数出账（不得静默：逐帧反映**当下**，不是只记曾开过）
+        // ⚠ R2（2026-11-12 · #15 后续）：每 10 帧（≈1 s）推一次 ovbNotify ——
+        //   此前 tick 内零推送 ⇒ 用户在录音期间盯着诊断区看，数字一动不动（「让失败不可观测」类）。
+        //   节流而非逐帧：React 订阅方每秒重渲染 1 次足够，逐帧（10 次/秒）纯浪费。
+        if (frames % 10 === 0) ovbNotify();
         b.vadHeardSpeech = heardSpeech;
         b.vadSpeaking = speaking;
         b.vadQuietFrames = quietFrames;
@@ -617,11 +795,11 @@ function ovbStartVad(stream, onSilence) {
         b.vadRms = rms;
         b.vadSnr = (noiseFloor > 0) ? (rms / noiseFloor) : 0;
         b.vadResolution = resolution;
-        b.vadPath = useFloat ? 'float' : 'byte';
+        b.vadPath = 'official';
         b.vadPathErrors = pathErrors;
         b.vadFrames = frames;
         b.vadCalibrating = false;
-        if (quietFrames >= requiredQuiet) { stopped = true; onSilence(); }
+        if (quietFrames >= requiredQuietNow()) { stopped = true; onSilence(); }
       } catch (e) { /* 单帧失败忽略 */ }
     };
     let stop = null;
@@ -799,71 +977,90 @@ function installOfficialVoiceBridge() {
   if (!b) return false;
   if (b.installed) return false;                      // 幂等：已装即返回，绝不叠层
   if (ovbDisabled()) { b.abandonReason = 'disabled-by-flag'; return false; }
-  if (typeof navigator === 'undefined' || !navigator.mediaDevices
-    || typeof navigator.mediaDevices.getUserMedia !== 'function') {
-    b.abandonReason = 'no-navigator-media-devices';
+  if (typeof document === 'undefined' || typeof document.querySelector !== 'function') {
+    b.abandonReason = 'no-document';
     return false;
   }
-  const mediaDevices = navigator.mediaDevices;
-  // ⚠ 保存**未绑定**的原函数：卸载/HMR 时必须恢复成 `=== 原函数`（绑定副本会破坏同一性，
-  //   实测：bind 后再赋回，`getUserMedia === 原函数` 为 false ⇒ HMR 卸载判据必红）。
-  //   调用侧用 `original.apply(mediaDevices, arguments)` 保持官方原有的 this 语义。
-  const original = mediaDevices.getUserMedia;
+  // 2026-11-12 (#15 architectural change): install NO LONGER wraps any global API.
+  // The old form replaced navigator.mediaDevices.getUserMedia; on the user's real machine
+  // that wrapper was never called (callCount=0), and a DSH restart does not reload an
+  // already-open browser page, so the wrapper was simply absent. That whole path is gone:
+  // we now observe the officially rendered activity container and read the official
+  // Recording instance out of it. Nothing global is patched, so nothing can leak or
+  // fail to restore, and install timing no longer matters.
+  const probe = (typeof officialRecordingProbe !== 'undefined' && officialRecordingProbe
+    && typeof officialRecordingProbe.probeOfficialRecording === 'function')
+    ? officialRecordingProbe.probeOfficialRecording
+    : null;
+  if (!probe) { b.abandonReason = 'recording-probe-unavailable'; return false; }
+
   let vadStop = null;
+  let vadSessionActive = false;
 
-  function wrappedGetUserMedia() {
-    // 只读判定 + 原样转发：参数（arguments）与返回值/异常**逐字原样**，绝不改 stream
-    // 本插件不接管采集/识别/写回（UD-0005）；外部已声明自采中则直接透传不介入
-    if (ovbSelfCapturing()) return original.apply(mediaDevices, arguments);
-    const constraints = arguments[0];
-    const isAudioOnly = !!constraints && !!(constraints.audio) && !constraints.video;
-    const p = original.apply(mediaDevices, arguments);
-    if (!isAudioOnly || !p || typeof p.then !== 'function') return p;
-    // 只在音频采集上挂观察器；错误原样透传（同一性保持）
-    return p.then((stream) => {
-      try {
-        if (vadStop) { try { vadStop(); } catch (e) { /* 忽略 */ } vadStop = null; }
-        b.firstCallAt = b.firstCallAt || Date.now();
-        b.lastCallAt = Date.now();
-        // ⚠ missed 判定基元（第二次修）：用**调用计数**而非 `firstCallAt` 快照。
-        //   为何不能用 firstCallAt 比时刻：若上一次会话已置 firstCallAt，则全程未变；
-        //   而本次会话真正的 getUserMedia 可能**迟到**到会话收口之后才落地（CDP 实测命中该形态：
-        //   official start → phase recording → 120s 后 finish → 包装器 .then() 才落地）
-        //   ⇒ 按时刻比较会把**真命中**判成 missed（本批实测 sessionsMissed=1 且 firstCallAt>0 并存）。
-        //   计数只增不减 ⇒ 只要本会话内发生过调用，收口时两值必不同，无竞态、无迟到窗口。
-        b.callCount = (b.callCount || 0) + 1;
-        // ⚠ SW-1：开关关闭 ⇒ **不启动 VAD**（不观测、不自动停）。
-        //   ⚠ 包装观测读数（callCount 等）**照记** —— 它与 VAD 开关无关，且是 missed 判据的基元；
-        //     若一并跳过，会把「按意图关闭」误报成「未观测到官方采集」。
-        //   ⚠ stream **原样返回**（只观测不改行为：本分支连观测都不做，更不改行为）。
-        if (!ovbVadEnabled()) {
-          b.vadSkipped = (b.vadSkipped || 0) + 1;
-          ovbNotify();
-          return stream;
-        }
-        vadStop = ovbStartVad(stream, () => {
-          const r = ovbStopOfficial();
-          // ⚠ N-1 修复（第二处）：会话已收尾/未在采集 ⇒ **不得**记降级原因（与 ovbStopOfficial 同语义，
-          //   否则手动停之后仍会被写上一次 'silence-detected-stop-unavailable'，同样挂在第一优先分支上）。
-          if (r.via === 'no-active-session') return;
-          if (!r.stopped && !b.abandonReason) b.abandonReason = 'silence-detected-stop-unavailable';
-        });
-        ovbNotify();
-      } catch (e) { /* 观察失败不得影响官方链路 */ }
-      return stream;
-    }, (err) => { throw err; });
-  }
-  wrappedGetUserMedia.__dshPeWrapped = true;
+  // Drive one VAD session off the official Recording instance.
+  // Detects the recording->non-recording transition and tears the session down.
+  const syncSession = () => {
+    // ⚠ 2026-11-12 (#15 arch change): self-capture (hotkey owns the mic) must keep us out,
+    //   exactly as the old getUserMedia wrapper did via ovbSelfCapturing(). Losing this check
+    //   would let the plugin open a second VAD session over a capture it does not own.
+    if (ovbSelfCapturing()) return;
+    const res = probe(OVB_ACTIVITY_ATTR, document);
+    const recordingPhase = (res && res.phase === OVB_RECORDING_PHASE);
+    const live = !!(res && res.found && res.recording);
+    if (live && recordingPhase && !vadSessionActive) {
+      // Session start: clear the previous session's demotion reason, then open a VAD.
+      b.abandonReason = '';
+      // 2026-11-12 (#15 arch change): do NOT clear b.recording here.
+      //   Under the old wrapper the recorder was captured by the getUserMedia path, which ran
+      //   AFTER this point, so clearing was harmless. Now the recorder is captured independently
+      //   (ovbWrapRecorder sees the official recorder construction), and it may well have been
+      //   captured BEFORE the session becomes visible — clearing here would throw that reference
+      //   away and the A2 fallback stop would then report no-stop-button-and-no-recorder
+      //   (measured). The reference is already cleared on recorder stop and on uninstall.
+      if (!ovbVadEnabled()) { b.vadSkipped = (b.vadSkipped || 0) + 1; ovbNotify(); return; }
+      vadSessionActive = true;
+      const rec = res.recording;
+      const getAmp = () => (typeof rec.amplitude === 'function' ? rec.amplitude() : 0);
+      b.callCount = (b.callCount || 0) + 1;
+      b.firstCallAt = b.firstCallAt || Date.now();
+      b.lastCallAt = Date.now();
+      if (vadStop) { try { vadStop(); } catch (e) { /* ignore */ } vadStop = null; }
+      vadStop = ovbStartVad(getAmp, () => {
+        const r = ovbStopOfficial();
+        if (r.via === 'no-active-session') return;
+        if (!r.stopped && !b.abandonReason) b.abandonReason = 'silence-detected-stop-unavailable';
+      });
+      if (!vadStop) vadSessionActive = false;
+      ovbNotify();
+      return;
+    }
+    if (vadSessionActive && (!live || !recordingPhase)) {
+      vadSessionActive = false;
+      if (vadStop) { try { vadStop(); } catch (e) { /* ignore */ } vadStop = null; }
+      ovbNotify();
+    }
+  };
 
-  try { mediaDevices.getUserMedia = wrappedGetUserMedia; } catch (e) {
-    b.abandonReason = 'get-user-media-wrap-failed';
+  try {
+    const mo = new MutationObserver(syncSession);
+    mo.observe(document.body, {
+      childList: true, subtree: true,
+      attributes: true, attributeFilter: [OVB_ACTIVITY_ATTR],
+    });
+    b.sessionObserver = mo;
+  } catch (e) {
+    b.abandonReason = 'session-observer-failed';
     return false;
   }
-  b.original = original;
+
   b.installed = true;
+  // ⚠ 2026-11-12: the MediaRecorder fallback is INDEPENDENT of the VAD data source.
+  //   It is only used when the official stop button cannot be found (A2 path), so it must
+  //   keep being installed — dropping it here silently removed the documented fallback.
   ovbWrapRecorder();
   ovbWatchActivity();
   ovbNotify();
+  syncSession();
   return true;
 }
 
@@ -917,8 +1114,11 @@ function ovbWrapRecorder() {
 function uninstallOfficialVoiceBridge() {
   const b = ovbBus();
   if (!b) return false;
-  if (b.original && typeof navigator !== 'undefined' && navigator.mediaDevices) {
-    try { navigator.mediaDevices.getUserMedia = b.original; } catch (e) { /* 忽略 */ }
+  // 2026-11-12 (#15 architectural change): no getUserMedia wrapper to restore any more.
+  // Only the session observer (added by install) and the recorder fallback need teardown.
+  if (b.sessionObserver) {
+    try { b.sessionObserver.disconnect(); } catch (e) { /* ignore */ }
+    b.sessionObserver = null;
   }
   if (b.wrappedRecorder && b.originalRecorder) {
     try { window.MediaRecorder = b.originalRecorder; } catch (e) { /* 忽略 */ }

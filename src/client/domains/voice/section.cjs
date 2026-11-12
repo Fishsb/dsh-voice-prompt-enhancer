@@ -91,7 +91,13 @@ function OfficialVoiceDiag(props) {
   //   ⚠ 只排在**正常/瞬态**分支（`recording`/`feedbackSeen`/`sessionsStarted`/`armed`）之前：
   //     那些不是故障，而「开关到底关没关」正是用户此刻的疑问 ⇒ 开关态优先作答。
   else if (snap.vadEnabled === false) { text = t('voiceSilenceOff'); cls = 'dsh-plg-note dsh-plg-upd-outdated'; }
+  // ⚠ R1（2026-11-12 · #15 后续）：「VAD 在跑但门从未开过」必须有**独立可见态** ——
+  //   此前该形态与正常态共用「官方采集进行中」⇒ 用户「设为 ON 2 秒、等很久不停」时界面完全正常
+  //   （「让失败不可观测」类）。判据三条件：VAD 真的在跑（frames>0，排除没启动/被跳过）+
+  //   门从未开过（heardSpeech=false）+ **会话已结束**（不在录）——录音中用户可能马上开口，
+  //   过早下结论会闪红；结束后才是结论。位置：排在开关关闭之后（失效面纪律）、采集中之前。
   else if (snap.recording) { text = t('voiceOfficialActive'); }
+  else if ((snap.vadFrames || 0) > 0 && !snap.vadHeardSpeech) { text = t('voiceOfficialVadSilent'); cls = 'dsh-plg-note dsh-plg-upd-outdated'; }
   // ⚠ CHG-090（2026-10-15 诊断如实化批）：此前判据是 `snap.feedbackSeen > 0` —— 而它是**页面生命期累计**
   //   （唯一自增点在 feedback 收口；`= 0` 只在 uninstall）⇒ 文案「**上次**官方会话以失败收场」实为「**历次累计发生过**」
   //   且**永不自消**（刷新/HMR 才归零）⇒ 把**历史残留**读成**当前失败**（用户最初报障看到的那行正由此而来）。
@@ -132,6 +138,16 @@ function OfficialVoiceDiag(props) {
     'vadFloor=' + (typeof snap.vadNoiseFloor === 'number' ? snap.vadNoiseFloor.toFixed(4) : '0'),
     // ⚠ SW-1：开关真值 + 「因开关关闭而未启动 VAD」的采集次数（开关真的约束了行为的证据）
     'vadOn=' + (snap.vadEnabled === false ? '0' : '1'), 'vadSkipped=' + (snap.vadSkipped || 0),
+    // ⚠ R3（2026-11-12 · #15 后续）：4 个「当下可判」读数此前**零消费者**（只存在于 snapshot）——
+    //   用户无法从 title 区分「VAD 没启动」vs「在跑但门没开」vs「在跑但电平太低」。
+    'vadRms=' + (typeof snap.vadRms === 'number' ? snap.vadRms.toFixed(4) : '0'),
+    'vadSnr=' + (typeof snap.vadSnr === 'number' ? snap.vadSnr.toFixed(2) : '0'),
+    'vadSpeak=' + (snap.vadSpeaking ? '1' : '0'), 'vadPath=' + (snap.vadPath || '-'),
+    // ⚠ R9（2026-11-12 · #15 现场）：missed 态的**分叉判据** ——
+    //   calls=0 且 missed>0 ⇒ 包装器从未被调用（安装顺序/引用捕获问题，判定逻辑无从谈起）；
+    //   calls>0 且 missed>0 ⇒ 首场挂上了、后续场漏挂（官方复用已缓存流，不再调 getUserMedia）。
+    //   两者处置完全不同，必须有此读数才能远程定位。
+    'calls=' + (snap.callCount || 0),
   ].filter(function (x) { return !!x; }).join(' | ');
   return React.createElement('div', { className: 'dsh-plg-row' },
     React.createElement('span', { className: cls, role: 'status', title: diagTitle }, t('voiceOfficialDiagTitle') + '：' + text),
@@ -548,7 +564,10 @@ function VoiceSection(props) {
   //   · 读取：滑块值 = `vadOn ? round(silenceMs / 1000) : 0`
   //   · 写 0：**只置 `enabled = false`**，`silenceMs` **保持原值** ⇒ 重开回到上次档位（不回落 2 秒）
   //   · 档位域不变：`silenceMs` **永远只取 1–5 秒**（`normalizeVadSilenceMs` 的域与「非法回落 2000」未改）
-  const vadOn = !!(v.vad && v.vad.enabled !== false);
+  // R7（2026-11-12 · #15 后续）：缺省语义与消费端对齐 ——
+  //   旧写法在「配置缺 vad 段」时 UI 显示关，而消费端按开在跑（两个真相，SW-1 同族）。
+  //   改为与 official-bridge ovbVadEnabled 同一表达式形态：缺段视为开。
+  const vadOn = !(v.vad && v.vad.enabled === false);
   const silenceSec = Math.round(vadSilenceMsOf(v) / 1000);
   // ⚠ 写入必须**带上当前 `silenceMs`**：`saveVoiceCfg` 的 `patch.vad` 会**整体替换** `vad` 对象
   //   ⇒ 只写 `{ vad: { enabled } }` 时 `mergeVoice` 会把 `silenceMs` 归一为默认 2000
