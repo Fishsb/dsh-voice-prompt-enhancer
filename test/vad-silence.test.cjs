@@ -302,21 +302,26 @@ test('VADSIL-P14b 下拉的当前值 = 开关真相（单一事实源：vad.enab
   for (const n of [1, 2, 3, 4, 5]) assert.equal(S.normalizeVadSilenceMs(n), n * 1000, '档位 ' + n + ' 秒仍合法');
 });
 
-test('VADSIL-P14c 选「关」只置 enabled=false 且 silenceMs 保持原值（关->开回到上次档位）', () => {
-  const r = renderVoiceSection({ vad: { enabled: true, silenceMs: 5000 } });
+test('VADSIL-P14c 选「关」只置 enabled=false，同段其它字段一个都不丢（silenceMs/floorDb/floorMeasuredAt）', () => {
+  const r = renderVoiceSection({ vad: { enabled: true, silenceMs: 5000, floorDb: -42.3, floorMeasuredAt: 1794552841922 } });
   const sel = selectByLabel(r.tree.kids[0], 'voiceVadShort');
   assert.ok(sel, '前置：静音监测下拉须在位');
   sel.props.onChange({ target: { value: 'off' } });
   assert.equal(r.S.voiceCfgState.value.vad.enabled, false, '选关须置 enabled = false');
-  assert.equal(r.S.voiceCfgState.value.vad.silenceMs, 5000, '选关不得改动 silenceMs（保持 5000 => 重开回上次档位）');
+  // 2026-11-13（用户裁定）：开关并入下拉后没有「关->开回到上次档位」这回事 ——
+  //   要开启必须自己选档位，那一步就写入新档位。本条判据随之改为不丢其它字段（这才是真风险）：
+  //   选关时若不带上 silenceMs/floorDb/floorMeasuredAt，patch.vad 整体替换会把它们归一为默认，静默丢值。
+  assert.equal(r.S.voiceCfgState.value.vad.silenceMs, 5000, '选关不得改动 silenceMs（未选档位就不该被归一成默认 2000）');
+  assert.equal(r.S.voiceCfgState.value.vad.floorDb, -42.3, '选关不得丢掉 floorDb（同段字段须原样带上）');
+  assert.equal(r.S.voiceCfgState.value.vad.floorMeasuredAt, 1794552841922, '选关不得丢掉 floorMeasuredAt');
   assert.equal(r.S.voiceCfgState.value.vad.silenceMs === 0, false, 'silenceMs 不得被写成 0（那是另立第二份真相）');
+  // 重新开启 = 用户自己选档位；选几就是几（没有恢复上次这回事）
   const r2 = renderVoiceSection({ vad: { enabled: false, silenceMs: 5000 } });
   const sel2 = selectByLabel(r2.tree.kids[0], 'voiceVadShort');
-  sel2.props.onChange({ target: { value: '5' } });
+  sel2.props.onChange({ target: { value: '3' } });
   assert.equal(r2.S.voiceCfgState.value.vad.enabled, true, '选档位须置 enabled = true');
-  assert.equal(r2.S.voiceCfgState.value.vad.silenceMs, 5000, '选 5 秒 => silenceMs 须为 5000（未被重置为 2000）');
+  assert.equal(r2.S.voiceCfgState.value.vad.silenceMs, 3000, '选 3 秒 => silenceMs 须为 3000（用户选的，不是恢复旧值）');
 });
-
 test('VADSIL-P14d 档位候选文案 = 「N 秒」，不带「开 ·」前缀（用户逐字②）', () => {
   const { vadSelect } = layoutRows({ vad: { enabled: true, silenceMs: 2000 } });
   const opts = vadSelect.kids.filter((k) => k && k.type === 'option');
@@ -457,14 +462,15 @@ test('VADSIL-P14x-1 变异①：档位候选拼回「开 ·」=> P14d 必红（�
 
 test('VADSIL-P14x-2 变异②：选关时把 silenceMs 写成 0 => P14c 必红（判据有牙）', () => {
   const src = voiceModules.voiceSectionSource();
-  const anchor = "if (raw === 'off') { saveVoiceCfg({ vad: { enabled: false, silenceMs: silenceMsNow } }); return; }";
-  assert.ok(src.includes(anchor), '前置：setVad 的写入锚点须在位');
+  // 本批语义收敛后，「选关」的写入语句变成带全同段字段的一行；变异 = 把 silenceMs 换成 0
+  const anchor = "saveVoiceCfg({ vad: { enabled: false, silenceMs: normalizeVadSilenceMs(vd.silenceMs), floorDb: vd.floorDb, floorMeasuredAt: vd.floorMeasuredAt } });";
+  assert.ok(src.includes(anchor), '前置：onVadPick 的「关」写入锚点须在位');
   const mutated = src.replace(anchor,
-    "if (raw === 'off') { saveVoiceCfg({ vad: { enabled: false, silenceMs: 0 } }); return; }");
+    "saveVoiceCfg({ vad: { enabled: false, silenceMs: 0, floorDb: vd.floorDb, floorMeasuredAt: vd.floorMeasuredAt } });");
   assert.notEqual(mutated, src, '前置：变异锚点须命中');
   const mu = renderWithSource(mutated, { vad: { enabled: true, silenceMs: 5000 } });
   mu.vadSelect.props.onChange({ target: { value: 'off' } });
-  // 变异后 silenceMs 归一为 2000（0 非法 => 回落），不再是 5000 => P14c 的「保持原值」断言必红
+  // 变异后 silenceMs 归一为 2000（0 非法 => 回落），不再是 5000 => P14c 的「不得改动 silenceMs」断言必红
   assert.equal(mu.S.voiceCfgState.value.vad.silenceMs !== 5000, true,
     '变异后 silenceMs 不再是 5000 => P14c 必红（判据有牙）');
 });

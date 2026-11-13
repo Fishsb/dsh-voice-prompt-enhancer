@@ -464,10 +464,14 @@ function VoiceSection(props) {
   // R7（2026-11-12 · #15 后续）：缺省语义与消费端对齐 —— 缺 vad 段视为开（与 ovbVadEnabled 同形）
   const vadOn = !(v.vad && v.vad.enabled === false);
   const silenceSec = Math.round(vadSilenceMsOf(v) / 1000);
-  // ⚠ 写入必须带上当前 silenceMs：saveVoiceCfg 的 patch.vad 会整体替换 vad 对象
-  //   ⇒ 只写 { vad: { enabled } } 时 mergeVoice 会把 silenceMs 归一为默认 2000
-  //   （实测：用户选 5 秒 ⇒ 关一下再开 ⇒ 变成 2 秒）。带原值即可保持档位。
-  const silenceMsNow = vadSilenceMsOf(v);
+  // 2026-11-13（用户裁定 · 开关并入下拉后语义收敛）：不再有「关→开回到上次档位」
+  //   用户逐字：「当前开关内置在下拉框之后就没有关→开回到上次档位了，因为打开的话也是用户自己选择了」
+  //   ⇒ 下拉里不存在「开」这个动作：用户要开启时必须自己选一个档位，那一步就是写入新档位。
+  //   因此「选关时保留 silenceMs 供下次恢复」这条纪律自然失效（没有任何路径会用到被保留的值）——
+  //   ⛔ 不再为它保留额外读取；vad.enabled 与 silenceMs 仍是两个字段，语义各自独立。
+  //   ⚠ 写入时仍带上当前值：saveVoiceCfg 的 patch.vad 会整体替换 vad 对象
+  //     ⇒ 不带就会把未列出的字段归一为默认（floorDb/floorMeasuredAt 会一起丢）。
+  //     「带上」是为了不丢其它字段，不是为了「记住档位」。
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 环境噪声绝对下限（2026-11-12 · 用户方案）：采 3 秒环境 → p95 + 5 dB → 写入 vad.floorDb
@@ -500,7 +504,7 @@ function VoiceSection(props) {
     const ok = Number.isFinite(n) && n >= -100 && n <= 0;
     if (!ok) { setFloorDraft(floorDbNow === null ? '' : String(floorDbNow)); return; }
     const floor = Math.round(n * 10) / 10;
-    saveVoiceCfg({ vad: { enabled: vadOn, silenceMs: silenceMsNow, floorDb: floor, floorMeasuredAt: Date.now() } });
+    saveVoiceCfg({ vad: { enabled: vadOn, silenceMs: normalizeVadSilenceMs(curVad().silenceMs), floorDb: floor, floorMeasuredAt: Date.now() } });
     setFloorDraft(String(floor));
   };
   const runFloorMeasure = () => {
@@ -525,7 +529,7 @@ function VoiceSection(props) {
       const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
       const db = 20 * Math.log10(Math.max(p95, 1e-9));
       const floor = Math.max(-100, Math.min(0, Math.round((db + 5) * 10) / 10));
-      saveVoiceCfg({ vad: { enabled: vadOn, silenceMs: silenceMsNow, floorDb: floor, floorMeasuredAt: Date.now() } });
+      saveVoiceCfg({ vad: { enabled: vadOn, silenceMs: normalizeVadSilenceMs(curVad().silenceMs), floorDb: floor, floorMeasuredAt: Date.now() } });
       setFloorDraft(String(floor));
       setMeasureMsg(t('voiceFloorDone').replace('{db}', String(floor)));
     };
@@ -590,9 +594,14 @@ function VoiceSection(props) {
   const vadOptions = [{ value: 'off', text: OFF_TEXT }]
     .concat([1, 2, 3, 4, 5].map((n) => ({ value: String(n), text: n + ' ' + t('voiceVadSilenceUnit') })));
 
-  // 值→写入：选「关」只置 enabled=false 且保留档位（与既有纪律一致）；选档位 = 开启 + 写档位。
+  // 值→写入（2026-11-13 · 用户裁定后的收敛语义）：
+  //   · 选「关」⇒ 只置 enabled=false；那一步没有「档位」这回事，同段其它字段原样带上（不丢值）。
+  //   · 选档位 ⇒ enabled=true + 写入该档位（这一步就是「开启」，用户自己挑的）。
+  //   ⚠ 每个处理器都在**提交时**现读 voiceCfgState（不从渲染时闭包取值）：
+  //     下拉的 onchange 可能晚于一次重新渲染到达，读旧快照会把期间用户改过的同段字段覆盖回旧值。
+  const curVad = () => (voiceCfgState && voiceCfgState.value && voiceCfgState.value.vad) || {};
   const onAutoEnhancePick = (raw) => {
-    if (raw === 'off') { saveVoiceCfg({ autoEnhance: false, autoEnhanceMode: autoEnhanceModeNow }); return; }
+    if (raw === 'off') { saveVoiceCfg({ autoEnhance: false }); return; }
     saveVoiceCfg({ autoEnhance: true, autoEnhanceMode: raw });
   };
   const onCorrectionPick = (raw) => {
@@ -601,8 +610,13 @@ function VoiceSection(props) {
   };
   const onFillerPick = (raw) => { saveVoiceCfg({ filler: { enabled: raw !== 'off' } }); };
   const onVadPick = (raw) => {
-    if (raw === 'off') { saveVoiceCfg({ vad: { enabled: false, silenceMs: silenceMsNow } }); return; }
-    saveVoiceCfg({ vad: { enabled: true, silenceMs: normalizeVadSilenceMs(Number(raw)) } });
+    const vd = curVad();
+    // 关：只动 enabled；其余字段（silenceMs/floorDb/floorMeasuredAt）原样带上 ⇒ 一个都不丢
+    if (raw === 'off') {
+      saveVoiceCfg({ vad: { enabled: false, silenceMs: normalizeVadSilenceMs(vd.silenceMs), floorDb: vd.floorDb, floorMeasuredAt: vd.floorMeasuredAt } });
+      return;
+    }
+    saveVoiceCfg({ vad: { enabled: true, silenceMs: normalizeVadSilenceMs(Number(raw)), floorDb: vd.floorDb, floorMeasuredAt: vd.floorMeasuredAt } });
   };
 
   // 行定义：标签 + 控件（同一网格里的一个格）
