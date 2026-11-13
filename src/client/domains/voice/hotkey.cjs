@@ -243,20 +243,28 @@ function VoiceHotkeyHost(props) {
     //   ⛔ 本批只**传归属**，不改判据与触发时机（四组合逻辑逐字未动）。
     // 目标模式第二批：动作顺序改由共享纯计划决定（不再在此内联第二份四组合分支）。
     // 计划只负责“哪些步骤、什么顺序”；下面的执行器负责各步骤的副作用，失败语义保持原样。
-    const planVoiceSteps = (typeof planVoicePostprocess === 'function')
+    // ⚠ 2026-11-13 修复（「开关打开却不生效」实机报障）：本计划原为**闭包内一次性快照**——
+    //   它在 effect 挂载时求值一次，而该 effect 依赖只有 [sessionId, inputActions]，**不含配置**。
+    //   ⇒ 用户在设置页打开「语音纠错」后，正在用的会话仍按挂载时的旧计划走（correction 步骤不存在）
+    //   ⇒ 识别完成后直接跳过纠错（日志零 [correction] 行），表现为"开关是开的但完全不生效"，
+    //   必须切会话（重建 effect）才恢复。同族坑在 autoEnhance 上不存在——它走 fire() 每次实时读配置。
+    //   处置：改为**每次执行时**按当前配置重新求计划（纯函数、无副作用，成本可忽略）。
+    const currentPlan = () => (typeof planVoicePostprocess === 'function'
       ? planVoicePostprocess({
         fillerEnabled: !!(voiceCfgState.value && voiceCfgState.value.filler && voiceCfgState.value.filler.enabled !== false),
         correctionEnabled: correctionCfgOn(),
         autoEnhanceEnabled: !!(voiceCfgState.value && voiceCfgState.value.autoEnhance === true),
       })
-      : null;
-    const wantPostprocessStep = (step) => (planVoiceSteps
-      ? voicePostprocessHas(planVoiceSteps, step)
-      : step === 'correction'
+      : null);
+    const wantPostprocessStep = (step) => {
+      const plan = currentPlan();
+      if (plan) return voicePostprocessHas(plan, step);
+      return step === 'correction'
         ? correctionCfgOn()
         : step === 'enhance'
           ? !!(voiceCfgState.value && voiceCfgState.value.autoEnhance === true)
-          : false);
+          : false;
+    };
     const runCorrectionThenMaybeEnhance = () => {
       const wantCorrect = wantPostprocessStep('correction');
       const wantEnhance = wantPostprocessStep('enhance');
@@ -334,7 +342,10 @@ function VoiceHotkeyHost(props) {
         if (typeof cur !== 'string' || cur === '') return;
         const cfg = voiceCfgState.value && voiceCfgState.value.filler ? voiceCfgState.value.filler : {};
         // 目标模式第二批：清理开关也由同一份后处理计划取真值（与 planning 侧同口径）。
-        const fillerAllowed = wantPostprocessStep('filler') || (!planVoiceSteps && cfg.enabled !== false);
+        // ⚠ 2026-11-13：计划现为**每次实时求值**（不再是闭包快照）⇒ 兜底分支随之改为"计划不可用"判定，
+        //   否则会引用已删除的 planVoiceSteps 变量（构建期就抛 ReferenceError）。
+        const fillerAllowed = wantPostprocessStep('filler')
+          || (typeof planVoicePostprocess !== 'function' && cfg.enabled !== false);
         // ⚠ CHG-344（2026-11-08 · 作用域修复）：**只清本次识别新增的那一段**。
         //   基线取 `check()` 里已有的 `w.draft`（会话开始时的草稿），⛔ 不新造状态。
         //   作用域不清（`cur` 不以基线开头）⇒ 由 `runFiller` 记 skipped（`scope-unclear`）并跳过，
@@ -399,11 +410,29 @@ function VoiceHotkeyHost(props) {
       // 会话**开始**（相位出现）⇒ 记基线草稿 + 重置本会话的收口标记
       // ⚠ 字段名以 `snapshot()` 实际导出为准：它暴露的是 `recording`（= bus.active），**不是** `active`。
       //   （我第一版写成 `snap.active` ⇒ 恒 undefined ⇒ 基线永不记录 ⇒ 写回先于收口时永远测不到 delta。）
-      if (snap.recording && !snap.lastEndedAt) {
+      // ⚠ 2026-11-13 修复（实机「纠错只生效一次」）：本判据原为 `snap.recording && !snap.lastEndedAt`，
+      //   而 `lastEndedAt` **一旦赋过值就永不清零**（仅初始为 0，见 official-bridge.cjs:245）——
+      //   ⇒ 自第 2 场会话起该条件**恒为假** ⇒ 基线永不重记 ⇒ `officialBaseRef` 停留在上一轮
+      //   被 `:436` 清空后的 null ⇒ 收口时 fallback 到「收口那一刻的草稿」（**已含官方写回**）
+      //   ⇒ `check()` 里 `draftRef.current !== w.draft` 恒假 ⇒ 永不触发纠错/增强。
+      //   实机形态（用户 2026-11-13）：首次「汇划→绘画」正常，之后每次识别成「绘画」都零触发
+      //   （按钮无动态、提示词不变），切换会话同样首轮失效——均因基线自上轮起就丢了。
+      //   处置：判据改为「本会话尚未记基线」（`officialBaseRef.current` 为 null），
+      //   不再借用 `lastEndedAt` 当"新会话"信号 —— 它与基线生命周期无关（跨会话不复位）。
+      if (snap.recording && officialBaseRef.current === null) {
         // ⚠ UD-0055 / UD-0057（学习词典 · 采集侧）：用户按下录音 = 上一轮编辑**已结束**。
         //   此刻草稿 vs 机器输出快照 ⇒ 差异即「用户纠正」（形近才入库，筛选在契约层）。
         //   ⚠ 必须在记录新基线**之前**取，否则基线已被本轮草稿覆盖（比不到差异）。
-        if (typeof officialBaseRef.current !== 'string') { learnFromDraft(); machineTextRef.current = null; officialBaseRef.current = draftRef.current; }
+        learnFromDraft();
+        machineTextRef.current = null;
+        officialBaseRef.current = draftRef.current;
+        // ⚠ 2026-11-13 补（「只有第 1 轮生效」的第二处）：新会话开始必须同时**放行**本轮结束信号。
+        //   原实现只在官方相位"节点消失"分支更新 lastEndedAt；一旦某轮走了 feedback 分支
+        //   （或收口分支没被触发），lastEndedAt 就停在上一次的值 ⇒ 下面的去重判据
+        //   `snap.lastEndedAt === officialEndRef.current` 恒真 ⇒ **后续每一轮都被跳过**（实机：只生效一次）。
+        //   语义：本会话**尚未消费**过结束信号 ⇒ 把去重基准归零，让本轮收口一定能装臂。
+        //   ⚠ 只在"新会话开始"这一刻归零，且仅当 base 为 null（= 上一轮已彻底收尾），不影响同一轮重复通知。
+        officialEndRef.current = 0;
         return;
       }
       if (!snap.lastEndedAt) return;

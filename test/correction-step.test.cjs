@@ -428,3 +428,76 @@ test('CHG143-G3 ⭐ 新步提示词已进产物生成区（20 个常量 · 由�
   const disc = bundle.slice(discStart, discEnd);
   assert.ok(!disc.includes('字词层低争议订正'), '产物的 DISCIPLINE_PROMPT 不得再含该例外（已移出）');
 });
+
+// ─────────── 多轮会话回归锁（2026-11-13 · 实机「纠错只生效一次」）───────────
+// 病历（用户 2026-11-13 实机）：首次「汇划→绘画」正常；之后每次识别成「绘画」都零触发；
+//   切到别的会话首轮同样不触发。
+// 两处根因（都在 hotkey 订阅端）：
+//   ① 基线判据 `snap.recording && !snap.lastEndedAt` —— lastEndedAt 一旦赋值**永不清零**
+//      ⇒ 自第 2 场起恒假 ⇒ officialBaseRef 永不重记 ⇒ 收口时 fallback 到"已含写回的草稿"
+//      ⇒ check() 的 delta 恒为 0 ⇒ 永不触发。首轮能生效只因那时 lastEndedAt 仍为 0。
+//   ② 去重判据 `snap.lastEndedAt === officialEndRef.current` 在桥侧 lastEndedAt 未更新时恒真
+//      ⇒ 后续每轮被直接跳过。
+// 判据形态：两处都必须按"**会话生命周期**"而不是"某个跨会话不复位的计数器"来判定。
+//   ⚠ 为何用源码判据而非行为测试：夹具的 useEffect 无依赖判定，每次 render 都重跑 effect
+//     ⇒ 等于每轮重新订阅 ⇒ 恰好绕开"同一订阅跨多轮"这一缺陷形态（首版行为测试就此假绿，实测）。
+//     行为面已用**独立状态机复现**验证（见报告），此处锁源码形态防回归。
+test('CHG390-R1 ⭐多轮会话：基线判据不得再借用 lastEndedAt（它永不清零）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src/client/domains/voice/hotkey.cjs'), 'utf8');
+  assert.ok(
+    src.includes('if (snap.recording && officialBaseRef.current === null) {'),
+    '会话开始判据必须是「本会话尚未记基线」，不得再写成 !snap.lastEndedAt',
+  );
+  assert.ok(
+    !/if \(snap\.recording && !snap\.lastEndedAt\) \{/.test(src),
+    '不得退回缺陷形态 snap.recording && !snap.lastEndedAt',
+  );
+});
+
+test('CHG390-R2 ⭐多轮会话：新会话开始必须放行本轮结束信号（去重基准归零）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src/client/domains/voice/hotkey.cjs'), 'utf8');
+  // 定位"记基线"分支，其内必须把 officialEndRef 归零，否则上一轮的结束时刻会把本轮去重掉
+  const startBranch = src.indexOf('officialBaseRef.current === null) {');
+  assert.ok(startBranch > -1, '未找到基线分支');
+  const branchBody = src.slice(startBranch, startBranch + 1200);
+  assert.ok(
+    /officialEndRef\.current = 0;/.test(branchBody),
+    '记基线的同一分支里必须把 officialEndRef 归零（放行本轮的结束信号）',
+  );
+});
+
+// 行为面证明：用纯状态机复刻"桥 + 订阅端"的真实跨轮时序（不经 React 夹具）。
+test('CHG390-R3 ⭐状态机复现：连续 4 轮每轮都触发（修复形态）vs 只触发首轮（缺陷形态）', () => {
+  const run = (fixed) => {
+    let base = null;        // officialBaseRef
+    let endRef = 0;         // officialEndRef
+    let lastEndedAt = 0;    // 桥侧：每轮正常收口都会更新（这才是真实形态）
+    let clock = 0;
+    const triggers = [];
+    for (let round = 1; round <= 4; round += 1) {
+      // ── 会话开始 ──
+      // 缺陷判据：!lastEndedAt（第 1 轮为 0 故成立；此后恒为假 ⇒ 基线永不重记）
+      const isNewSession = fixed ? (base === null) : (!lastEndedAt);
+      if (isNewSession) {
+        base = 'draft@start';
+        if (fixed) endRef = 0;   // 放行本轮结束信号
+      }
+      // ── 会话结束：桥更新结束时刻（真实桥在普通收尾下必更新）──
+      clock += 100;
+      lastEndedAt = clock;
+      // ── 订阅端：去重 → 装臂 ──
+      if (lastEndedAt === endRef) { triggers.push(false); continue; }
+      endRef = lastEndedAt;
+      // 基线：记过就用它；没记上（缺陷形态下第 2 轮起）⇒ 退化为"收口时的草稿"（已含写回）
+      const b = (typeof base === 'string') ? base : 'draft@end(已含写回)';
+      base = null;
+      triggers.push(b !== 'draft@end(已含写回)');
+    }
+    return triggers;
+  };
+  // 缺陷形态：第 1 轮基线正常 ⇒ 触发；第 2 轮起因 lastEndedAt 非 0 而永不重记基线
+  //   ⇒ 退化为 fallback ⇒ delta 测不到 ⇒ 不触发（= 用户实机"只生效一次"）
+  assert.deepEqual(run(false), [true, false, false, false], '缺陷形态：只首轮触发（实机现象）');
+  // 修复形态：每轮都重记基线 + 重置去重基准 ⇒ 每轮都触发
+  assert.deepEqual(run(true), [true, true, true, true], '修复形态：每轮都触发');
+});
