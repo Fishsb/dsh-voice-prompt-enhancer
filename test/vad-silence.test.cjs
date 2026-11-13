@@ -379,7 +379,7 @@ test('VADSIL-P14h 行高不受网格拉伸影响（flex 容器 + 显式 align-it
   assert.ok(/align-items:center/.test(row[1]), '必须 align-items:center —— 默认 stretch 会把控件拉成方块');
   const g = st.match(/'[.]va-grid2[{]([^}]*)[}]'/);
   assert.ok(g, 'styles.js 须有 .va-grid2 规则');
-  assert.ok(/auto-fit/.test(g[1]), '.va-grid2 须 auto-fit（窄视口自动单列）');
+  assert.ok(/grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/.test(g[1]), '.va-grid2 须恒两栏（用户叫停单列切换）');
 });
 
 test('VADSIL-P14i 环境噪声 = 可编辑输入框 + 尾部图标按钮（与热键同构；用户逐字③）', () => {

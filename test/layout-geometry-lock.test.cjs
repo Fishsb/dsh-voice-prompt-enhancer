@@ -106,10 +106,10 @@ test('GEOLOCK-03 行结构 = 固定宽标签列 + 弹性控件列（这是六行
   // 六格全都走同一个 field 构造器（含热键/噪声两处自己的调用）
   const allFields = s.split("field(t(").length - 1;
   assert.equal(allFields, 6, '六格须全部走同一个 field 构造器；实得 ' + allFields);
-  // ③ ⛔ 不得退回写死的 gridTemplateColumns（列数须由 CSS auto-fit 决定）
+  // ③ ⛔ 代码层不得写死 gridTemplateColumns（列数由 CSS 统一决定；当前口径 = 恒两栏、无响应式切换）
   const codeOnly = s.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
   assert.equal(/gridTemplateColumns/.test(codeOnly), false,
-    '⛔ 代码层不得出现 gridTemplateColumns（列数交给 CSS 的 auto-fit）');
+    '⛔ 代码层不得出现 gridTemplateColumns（列数交给 CSS，避免同一列数写两处）');
 });
 
 test('GEOLOCK-04 热键行与噪声行**完全同构**（输入框 + 尾部同一图标按钮）', () => {
@@ -163,12 +163,23 @@ test('GEOLOCK-05 两行之所以等宽：CSS 上控件列同宽 + 图标按钮�
   assert.ok(/padding-right:\d+px/.test(unitInp[1]), '内嵌单位的输入框须留右内边距（否则文字压住 dBFS）');
 });
 
-test('GEOLOCK-06 主网格列数由 auto-fit 决定（⛔ 不写死 repeat(2, …)）', () => {
+test('GEOLOCK-06 主网格恒两栏且**无任何单列切换**（⛔ 不回 auto-fit / 不加 @media 单列分支）', () => {
   const st = styleSrc();
   const g = st.match(/'\.va-grid2\{([^}]*)\}'/);
   assert.ok(g, 'styles.js 须有 .va-grid2 规则');
-  assert.ok(/auto-fit/.test(g[1]), '.va-grid2 须 repeat(auto-fit, …) ⇒ 窄视口自动收成一列');
-  assert.equal(/repeat\(2,/.test(g[1]), false, '⛔ 不得写死两列（窄视口会挤压控件）');
+  // 2026-11-13（用户两次裁定 · 断点定案）：**恒两栏，不做任何单列切换**。
+  //   病历①：原 repeat(auto-fit,minmax(320px,1fr)) 两栏需 668px，而 DSH 设置弹窗内容宽实测 ~667px
+  //     ⇒ 差 1px 退单列，用户在电脑 Web 端看到的就是单列（他原话「电脑 web 端不应该是窄屏啊」）。
+  //   病历②：本席曾补一条 max-width 媒体查询想兜「极窄」，被用户明确叫停——
+  //     「不是在极窄时退单列，你切换到单列的判断就不对，应该是根据显示的比例判断…
+  //       当然我说了当前这个不需要做，不需要切换单列，停止这个功能」。
+  //   ⇒ 判据锁死三件：①恒两栏 ②无 auto-fit ③**不得存在任何单列分支**（max-width / orientation 皆禁）。
+  assert.ok(/grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/.test(g[1]), '.va-grid2 须恒两栏（repeat(2,minmax(0,1fr))）');
+  assert.equal(/auto-fit/.test(g[1]), false, '⛔ 不得回到 auto-fit（断点会随列宽隐式抬高，正是病历①）');
+  assert.equal(/@media/.test(st.slice(st.indexOf('\.va-grid2{'), st.indexOf('\.va-grid2{') + 400)), false,
+    '⛔ .va-grid2 附近不得出现 @media 单列分支（用户明确叫停单列功能）');
+  assert.equal(/@media[^{]*\.va-(grid2|dict2)/.test(st), false,
+    '⛔ 全表不得有任何针对 .va-grid2/.va-dict2 的 @media（不再按宽度切换）');
 });
 
 test('GEOLOCK-07 状态区 = 一行摘要 + 诊断按钮（详情默认收起但**不得丢**）', () => {

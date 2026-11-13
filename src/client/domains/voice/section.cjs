@@ -705,7 +705,7 @@ function VoiceSection(props) {
     React.createElement(CorrectionDiag, props),
   ) : null;
 
-  // 主面板：两列网格（窄视口由 CSS 的 auto-fit 自动收成一列，⛔ 不写死列数）
+  // 主面板：两列网格（列数由 CSS 定义：恒两栏；⛔ 不做单列切换 —— 用户 2026-11-13 明确叫停）
   const controlsGrid = React.createElement('div', { className: 'va-grid2' },
     // ① 自动增强 —— 关 / 跟随全局 / 五模式
     field(t('voiceAutoEnhance'),

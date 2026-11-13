@@ -319,7 +319,7 @@ const CSS = [
   // 用户口径：开关并入下拉（一个下拉 = 一项设置的完整状态）·环境噪声与语音热键完全同构·
   //   状态收成一行 + 诊断按钮·学习词典改双集合。
   // 设计纪律（承本仓两次固定像素病历）：
-  //   · 列数由 auto-fit 决定，⛔ 不写死 repeat(2, …)（窄视口要能自动收成一列）；
+  //   · 列数由 CSS 统一定义（当前 = 恒两栏）；⛔ 不做响应式单列切换（用户 2026-11-13 叫停）；
   //   · 宽度一律由 flex/grid 分配，⛔ 不给控件写固定 px 宽；
   //   · 全部走既有 token（label/border/bg 三族），⛔ 不新增颜色字面量。
   // ═══════════════════════════════════════════════════════════════════════════
@@ -337,8 +337,18 @@ const CSS = [
   '.va-more:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
   // 诊断展开区：与摘要同宽的一条浅底区（内容 = 原四行，一字未改）
   '.va-diag{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:8px}',
-  // 主网格：auto-fit 自动收列（窄视口 ⇒ 单列），列宽下限 320px 保证下拉不被压到不可用
-  '.va-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px 28px}',
+  // 主网格：**桌面恒两栏**（2026-11-13 用户裁定后的断点订正）
+  // 病历：上一版写 repeat(auto-fit,minmax(320px,1fr)) ⇒ 两栏需 320×2+28=**668px**，
+  //   而 DSH 设置弹窗的内容宽实测约 **667px** ⇒ 只差 1px 就退成单列。用户在电脑 Web 端
+  //   看到的就是单列（他原话：「当前 DSH 是电脑 web 端不应该是窄屏啊」）。
+  //   ⇒ 用户裁定「基本都电脑使用，不需要考虑窄屏」⇒ 断点显著下调：**≥520px 恒两栏**，
+  //     仅 <520px（手机级窄屏）才退单列。列宽下限随之降到 0（宽度由 1fr 均分，不设绝对下限）。
+  //   ⚠⚠ 2026-11-13 用户再裁定：**不做单列切换**。原话——
+  //     「不是在极窄时退单列，你切换到单列的判断就不对，应该是根据显示的比例判断是显示器横屏用户，
+  //       还是手机这种竖屏用户，跟宽窄没有关系，当然我说了当前这个不需要做，不需要切换单列，停止这个功能」。
+  //     ⇒ 已**删除**所有与单列相关的媒体查询：本面板恒为两栏，不再按宽度切换（也不按比例切换）。
+  //     ⛔ 不得再引入任何 max-width / orientation 的单列分支（用户明确叫停）。
+  '.va-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 28px}',
   // 一行 = 固定宽标签列 + 弹性控件列（标签列宽由 .va-lb 统一，全部行对齐）
   '.va-row{display:flex;align-items:center;gap:10px;min-width:0}',
   '.va-lb{flex:none;width:76px;min-width:76px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -358,8 +368,9 @@ const CSS = [
   '.va-gh > span{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
   '.va-hint{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}',
   '.va-dict-tip{white-space:normal}',
-  // 双集合：两栏并排（⛔ 仍是 auto-fit ⇒ 窄视口自动收成一栏）
-  '.va-dict2{display:grid;grid-template-columns:repeat(auto-fit,minmax(292px,1fr));gap:10px}',
+  // 双集合：两栏并排（恒两栏，无响应式切换）。
+  //   ⚠ 同上：恒两栏，不做响应式切换（用户 2026-11-13 明确叫停单列功能）。
+  '.va-dict2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}',
   '.va-box{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;min-width:0}',
   // 已停用集合：整块浅底 ⇒ 「不生效」一眼可见（不是靠逐条读文字）
   '.va-box-off{background:var(--dsw-alias-bg-layer-2)}',
