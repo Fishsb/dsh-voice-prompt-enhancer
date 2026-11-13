@@ -11,7 +11,9 @@ const {
   VOICE_DICTIONARY_MAX_ENTRIES,
   VOICE_DICTIONARY_MAX_TERM,
   normalizeDictionaryEntries,
-  applyVoiceDictionary,
+  matchVoiceDictionary,
+  recordVoiceDictionaryHits,
+  VOICE_DICTIONARY_PROMPT_MAX_HITS,
   learnVoiceDictionaryDiff,
 } = require('../src/shared/contracts/voice-config.cjs');
 const { sanitizeVoiceCfg } = require('../lib/asr.cjs');
@@ -49,17 +51,20 @@ test('VDICT-01 host 白名单与 client 白名单在 dictionary 上同形同值'
   assert.ok(Object.prototype.hasOwnProperty.call(VOICE_CONFIG_DEFAULTS, 'dictionary'));
 });
 
-// ── ② 空词典 / 全停用 ⇒ 草稿逐字不变 ────────────────────────────────────────────
-test('VDICT-02 空词典与全停用词典都不改动草稿（逐字相等且 applied === 0）', () => {
+// ── ② 词库只挑「命中的条目」，不产生任何替换结果（CHG-390）─────────────────────
+// 设计口径（用户 2026-11-13）：硬替换会在不合适场景误替换 ⇒ 替换决策交模型，契约层只做筛选。
+test('VDICT-02 空词典 / 全停用 / 无命中 ⇒ 命中列表为空（不产生替换结果）', () => {
   const text = '这是一段需要保持完全不变的话，ABCD。';
-  const empty = applyVoiceDictionary(text, []);
-  assert.equal(empty.text, text);
-  assert.equal(empty.applied, 0);
-  const disabled = applyVoiceDictionary(text, [{ from: 'ABCD', to: 'abdc', enabled: false }]);
-  assert.equal(disabled.text, text);
-  assert.equal(disabled.applied, 0);
-  // 非字符串输入按原文返回（保守）
-  assert.deepEqual(applyVoiceDictionary('', []), { text: '', applied: 0 });
+  assert.deepEqual(matchVoiceDictionary(text, []), []);
+  assert.deepEqual(matchVoiceDictionary(text, [{ from: 'ABCD', to: 'abdc', enabled: false }]), []);
+  assert.deepEqual(matchVoiceDictionary(text, [{ from: '不存在的词', to: 'x' }]), []);
+  assert.deepEqual(matchVoiceDictionary('', [{ from: 'ABCD', to: 'abdc' }]), []);
+  assert.deepEqual(matchVoiceDictionary(null, [{ from: 'ABCD', to: 'abdc' }]), []);
+  // 纯函数：不改入参、不返回被改写的文本
+  const entries = [{ from: 'ABCD', to: 'abdc', hits: 0, at: 1, enabled: true }];
+  const snapshot = JSON.parse(JSON.stringify(entries));
+  matchVoiceDictionary(text, entries);
+  assert.deepEqual(entries, snapshot, '命中筛选不得修改入参（尤其不得回写 hits）');
 });
 
 // ── ③ 形近筛子 ───────────────────────────────────────────────────────────────
@@ -104,14 +109,44 @@ test('VDICT-05 超过上限按 hits 降序 + at 降序淘汰', () => {
   assert.ok(out.every((e, i) => i === 0 || out[i - 1].hits >= e.hits), '必须按 hits 降序');
 });
 
-// ── ⑥ 替换不误伤：差集断言（只可能少掉被替换的片段，不允许新造内容）────────────
-test('VDICT-06 替换只动命中的字面串：去掉替换段后与原文逐字相等', () => {
+// ── ⑥ 命中筛选的边界：长词优先、上限截断、只挑字面出现 ─────────────────────────
+test('VDICT-06 命中筛选：长词优先排序、上限截断、只挑草稿里出现的', () => {
   const text = '今天开会说 recieve 这个词，然后 recieve 又出现一次。';
-  const r = applyVoiceDictionary(text, [{ from: 'recieve', to: 'receive' }]);
-  assert.equal(r.applied, 1);
-  assert.equal(r.text, '今天开会说 receive 这个词，然后 receive 又出现一次。');
-  // 差集：原文剔除 from 后的残段 == 结果剔除 to 后的残段（其余一字未改）
-  assert.equal(text.split('recieve').join(''), r.text.split('receive').join(''));
+  const hits = matchVoiceDictionary(text, [
+    { from: 'recieve', to: 'receive', enabled: true },
+    { from: 'recieve 这个', to: 'receive 这个', enabled: true },
+    { from: '没出现的词', to: 'x', enabled: true },
+  ]);
+  assert.equal(hits.length, 2, '只挑确实出现的两条');
+  assert.equal(hits[0].from, 'recieve 这个', '长词排在前面');
+  assert.equal(hits[1].from, 'recieve');
+
+  // 上限：超出 VOICE_DICTIONARY_PROMPT_MAX_HITS 的部分被截断（防提示词膨胀）
+  const many = [];
+  for (let i = 0; i < VOICE_DICTIONARY_PROMPT_MAX_HITS + 6; i += 1) {
+    many.push({ from: 'w' + String.fromCharCode(97 + (i % 26)), to: 'x', enabled: true });
+  }
+  const bullet = many.map((e) => e.from).join(' ');
+  const capped = matchVoiceDictionary(bullet, many);
+  assert.ok(capped.length <= VOICE_DICTIONARY_PROMPT_MAX_HITS, '命中条数必须有上限');
+});
+
+test('VDICT-06b 生效计数：模型实际改对才 +1，改动不彻底不计', () => {
+  const e = [{ from: '绘画', to: '会话', hits: 0, at: 1, enabled: true }];
+  const ok = recordVoiceDictionaryHits('这个绘画很重要', '这个会话很重要', e, 500);
+  assert.equal(ok[0].hits, 1, '改对了 ⇒ hits +1');
+  assert.equal(ok[0].at, 500, 'at 更新为本次时刻（用于淘汰排序）');
+
+  assert.equal(recordVoiceDictionaryHits('这个绘画很重要', '这个绘画很重要', e, 500)[0].hits, 0, '没改 ⇒ 不计');
+  assert.equal(recordVoiceDictionaryHits('这个绘画很重要', '这个会话还会绘画', e, 500)[0].hits, 0, '原写法仍在 ⇒ 不计');
+  assert.equal(recordVoiceDictionaryHits('无关文本', '会话', e, 500)[0].hits, 0, '原文没出现 ⇒ 不计');
+  // 停用条目不计数
+  const disabled = [{ from: '绘画', to: '会话', hits: 3, at: 1, enabled: false }];
+  assert.equal(recordVoiceDictionaryHits('这个绘画', '这个会话', disabled, 500)[0].hits, 3, '停用条目不累加');
+  // 纯函数：不改入参
+  const snapshot = JSON.parse(JSON.stringify(e));
+  recordVoiceDictionaryHits('这个绘画', '这个会话', e, 500);
+  assert.deepEqual(e, snapshot, '不得修改入参');
 });
 
 // ── ⑦ 采集：机器输出 → 用户手改 的差异学习 ───────────────────────────────────

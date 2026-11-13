@@ -64,10 +64,14 @@ function createVoiceHotkey(deps) {
 /* UD-0055 / UD-0057（学习词典）：实现全部来自契约层 lib/voice-config.cjs。
    ⛔ 此处不重写归一/替换/学习逻辑（避免第三份白名单，同族缺陷 M-2/M-3）。
    取具说明：本段写在工厂正文内（测试夹具 factoryBody 只取第一处行注释之后的正文），
-   并用 typeof 守卫 —— 真实运行时由 app.cjs 注入 deps；测试沙箱按位置参数注入、没有 deps 对象。 */
+   并用 typeof 守卫 —— 真实运行时由 app.cjs 注入 deps；测试沙箱按位置参数注入、没有 deps 对象。
+   ⚠ CHG-390（2026-11-13 · 词库改作纠错参考）：**此处不再做任何字面替换**。
+     原 applyVoiceDictionary（命中即替换）已整体删除——它会在不合适场景误替换（用户点名的问题）。
+     替换决策改由纠错模型在提示词内结合上下文作出（见 src/host/domains/voice/correction.cjs）。
+     本模块只剩两件事：① 采集（learnFromDraft）② 按模型实际改对累加 hits（recordHitsFromCorrection）。 */
 const _dictDeps = (typeof d !== 'undefined' && d && typeof d === 'object') ? d : {};
 const saveVoiceCfg = typeof _dictDeps.saveVoiceCfg === 'function' ? _dictDeps.saveVoiceCfg : null;
-const applyVoiceDictionaryFn = typeof _dictDeps.applyVoiceDictionary === 'function' ? _dictDeps.applyVoiceDictionary : null;
+const recordVoiceDictionaryHitsFn = typeof _dictDeps.recordVoiceDictionaryHits === 'function' ? _dictDeps.recordVoiceDictionaryHits : null;
 const learnVoiceDictionaryDiffFn = typeof _dictDeps.learnVoiceDictionaryDiff === 'function' ? _dictDeps.learnVoiceDictionaryDiff : null;
 
 const VOICE_LONG_PRESS_MS = 500;     // 按住 ≥500ms 判定为长按（松开即停官方）
@@ -269,21 +273,11 @@ function VoiceHotkeyHost(props) {
         if (!api) { doEnhance(); return; }
         const cur0 = draftRef.current;
         if (typeof cur0 !== 'string' || cur0.trim() === '') { doEnhance(); return; }
-        // ⚠ UD-0055 / UD-0057（学习词典 · 生效侧）：发纠错**之前**先做**纯字面替换**。
-        //   · 只替换 = 不改写语义；空词典 / 全停用 ⇒ `applied === 0` ⇒ 草稿**逐字不变**（不写回）。
-        //   · ⛔ 不走纠错提示词、⛔ 不改 `VOICE_CORRECT` 的调用形态（`text` 仍是整段草稿）。
-        let cur = cur0;
-        if (typeof applyVoiceDictionaryFn === 'function') {
-          try {
-            const rep = applyVoiceDictionaryFn(cur0, dictionaryEntries());
-            if (rep && typeof rep.text === 'string' && rep.applied > 0 && rep.text !== cur0) {
-              cur = rep.text;
-              if (inputActions && typeof inputActions.setDraft === 'function') {
-                try { inputActions.setDraft(cur); draftRef.current = cur; noteMachineText(cur); } catch (e) { /* 保守：写失败不改草稿 */ }
-              }
-            }
-          } catch (e) { cur = cur0; /* 保守：词典异常不改草稿 */ }
-        }
+        // ⚠ CHG-390（2026-11-13 · 词库改作纠错参考）：**此处不再做字面替换**。
+        //   词库改为由 host 侧挑出「草稿里命中的条目」写进纠错提示词的 {dictionary} 块，
+        //   由模型结合上下文判断该不该改（用户口径：「只要命中就替换的话可能在不合适的场景
+        //   也会被错误的替换」）。⇒ 发给纠错的 text 恒等于草稿原文，逐字不变。
+        const cur = cur0;
         const config = (typeof configState !== 'undefined' && configState && configState.value) ? configState.value : {};
         // ⚠ CHG-184（纠错状态可视化批）：相位由 correction.js 的 markCorrection* 三件**统一结算**
         //   （started / settled / failed）—— ⛔ 此处不再自行增减 correctionState 的计数。
@@ -295,6 +289,20 @@ function VoiceHotkeyHost(props) {
             if (inputActions && typeof inputActions.setDraft === 'function') {
               try { inputActions.setDraft(r.text); draftRef.current = r.text; noteMachineText(r.text); } catch (e) { /* 保守：写失败不改草稿 */ }
             }
+          }
+          // CHG-390：按**模型实际改对**累加词库 hits（用户 2026-11-13 拍板）。
+          //   ⚠ 判据全在契约层 recordVoiceDictionaryHits（纯字面、只增计数）——本处只负责接线与落盘。
+          //   ⚠ 只处理 host 回传的「本次进过提示词」的那几条；r.dictionaryHits 缺位 ⇒ 什么都不做。
+          if (typeof recordVoiceDictionaryHitsFn === 'function' && r.ok === true && typeof r.text === 'string') {
+            try {
+              const sent = Array.isArray(r.dictionaryHits) ? r.dictionaryHits : [];
+              if (sent.length > 0) {
+                const next = recordVoiceDictionaryHitsFn(cur, r.text, dictionaryEntries(), Date.now());
+                if (JSON.stringify(next) !== JSON.stringify(dictionaryEntries())) {
+                  saveVoiceCfg({ dictionary: { entries: next } });
+                }
+              }
+            } catch (e) { /* 保守：计数失败不影响语音链 */ }
           }
           corrNotify();
           doEnhance();

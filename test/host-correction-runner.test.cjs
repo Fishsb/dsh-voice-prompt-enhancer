@@ -181,3 +181,64 @@ test('HCR-08 ⭐runCorrection 把 args.config 传给历史读取（接线不丢�
   await runner.runCorrection({ sessionId: 's', text: '原文', config: { correction: { enabled: true, windowRounds: 2 }, fallback: [{ provider: 'p', model: 'm' }] } });
   assert.deepEqual(seen.at(-1), [1, 2], 'runCorrection 须把 config 一路传到 splitHistoryRounds');
 });
+// ─────────── CHG-390（2026-11-13 · 词库改作纠错参考）：{dictionary} 注入 ───────────
+// 判据（用户 2026-11-13 拍板）：
+//   ① 只把**草稿里命中的**词条喂进提示词（不是全量词库）；
+//   ② 词库**不做字面替换** —— 发给模型的 text 恒等于草稿原文；
+//   ③ 无命中 / 无词库 ⇒ {dictionary} 渲染为空串，提示词其余部分逐字不变。
+test('HCR-09 ⭐词库命中注入 {dictionary}，且不改动发给模型的原文', async () => {
+  const seen = [];
+  const { deps } = makeDeps({
+    harness: {
+      readVoiceConfig: () => ({
+        correction: { enabled: true },
+        dictionary: { entries: [
+          { from: '绘画', to: '会话', hits: 0, at: 1, enabled: true },
+          { from: '未命中词', to: 'x', hits: 0, at: 1, enabled: true },
+        ] },
+      }),
+    },
+    correctionPrompt: 'DICT=[{dictionary}]\nHIST=[{history}]',
+    llm: {
+      stream: (req) => {
+        seen.push({ system: req.system, text: req.messages[0].content[0].text });
+        return { [Symbol.asyncIterator]() { return { async next() { return { done: true }; } }; } };
+      },
+    },
+    collectStream: async () => ({ kind: 'ok', text: '这个会话很重要' }),
+  });
+  const runner = createCorrectionRunner(deps);
+  const out = await runner.runCorrection({ sessionId: 's', text: '这个绘画很重要', config: { fallback: [{ provider: 'p', model: 'm' }] } });
+  assert.equal(seen.length, 1);
+  assert.ok(seen[0].system.includes('- 绘画 → 会话'), '命中条目须进提示词；实得 ' + seen[0].system);
+  assert.ok(!seen[0].system.includes('未命中词'), '未命中的条目不进提示词');
+  assert.equal(seen[0].text, '这个绘画很重要', '⛔ 词库不得预替换原文（text 逐字不变）');
+  assert.deepEqual(out.dictionaryHits, [{ from: '绘画', to: '会话' }], '回传命中条目供 client 计数');
+});
+
+test('HCR-10 无命中 / 无词库 / 读取抛错 ⇒ {dictionary} 为空串且不阻断纠错', async () => {
+  const systems = [];
+  const makeLlm = () => ({
+    stream: (req) => {
+      systems.push(req.system);
+      return { [Symbol.asyncIterator]() { return { async next() { return { done: true }; } }; } };
+    },
+  });
+  const base = { correctionPrompt: 'D=[{dictionary}]', llm: makeLlm() };
+
+  const noHit = makeDeps(Object.assign({}, base, {
+    harness: { readVoiceConfig: () => ({ correction: { enabled: true }, dictionary: { entries: [{ from: '不出现', to: 'x', enabled: true }] } }) },
+  }));
+  const o1 = await createCorrectionRunner(noHit.deps).runCorrection({ sessionId: 's', text: '原文', config: { fallback: [{ provider: 'p', model: 'm' }] } });
+  assert.equal(systems.at(-1), 'D=[]', '无命中 ⇒ 空串');
+  assert.equal(Object.prototype.hasOwnProperty.call(o1, 'dictionaryHits'), false, '无命中不新增字段');
+
+  const noDict = makeDeps(Object.assign({}, base, { harness: { readVoiceConfig: () => ({ correction: { enabled: true } }) } }));
+  await createCorrectionRunner(noDict.deps).runCorrection({ sessionId: 's', text: '原文', config: { fallback: [{ provider: 'p', model: 'm' }] } });
+  assert.equal(systems.at(-1), 'D=[]', '无 dictionary 段 ⇒ 空串');
+
+  const noFace = makeDeps(Object.assign({}, base, { harness: { readVoiceConfig: () => { throw new Error('boom'); } } }));
+  const o3 = await createCorrectionRunner(noFace.deps).runCorrection({ sessionId: 's', text: '原文', config: { fallback: [{ provider: 'p', model: 'm' }] } });
+  assert.equal(o3.ok, true, '词库读取抛错不得阻断纠错（fail-closed 到"无参考"）');
+  assert.equal(systems.at(-1), 'D=[]');
+});

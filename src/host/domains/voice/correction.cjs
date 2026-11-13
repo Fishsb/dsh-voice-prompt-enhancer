@@ -10,6 +10,10 @@
 // 兼容性：返回值与既有 RPC 逐项一致，包括 skipped/skippedBy/switchFrom/code、
 // changed、historyChars、fallbackUsed 与失败 code/message。
 const { resolveCorrectionSwitch, CORRECTION_DISABLED_CODE, CORRECTION_ENABLED_REASON } = require('./switch.cjs');
+// CHG-390（2026-11-13 · 词库改作纠错参考）：词库**不再**在 client 侧做字面硬替换，
+//   改为在这里挑出「草稿中命中的词条」拼进纠错提示词的 {dictionary} 块，由模型结合上下文判断。
+//   ⚠ 归一/筛子/上限一律取契约层（lib/voice-config.cjs，经 shared 转发）——⛔ 不在此重写第二份。
+const { matchVoiceDictionary } = require('../../../shared/contracts/voice-config.cjs');
 
 const CORRECTION_WINDOW = [1, 1];
 
@@ -23,6 +27,39 @@ function resolveCorrectionWindow(cfg) {
 const CORRECTION_TIMEOUT_MS = 30000;
 const CORRECTION_MAX_TOKENS = 4000;
 const CORRECTION_OUTPUT_LIMIT = 16000;
+
+// 把命中的词条渲染成提示词里的人类可读清单。
+//   · 一行一条「识别成 → 应该改成」；空列表 ⇒ 空串（提示词内该小节据此判定"不适用"）。
+//   · ⚠ 只呈现**词形对应**，不附带任何"应当替换"的指令性措辞——该不该改由模型按判据决定。
+function renderDictionaryHits(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const lines = [];
+  for (let i = 0; i < list.length; i += 1) {
+    const e = list[i] && typeof list[i] === 'object' ? list[i] : null;
+    if (!e) continue;
+    const from = typeof e.from === 'string' ? e.from : '';
+    const to = typeof e.to === 'string' ? e.to : '';
+    if (!from || !to) continue;
+    lines.push('- ' + from + ' → ' + to);
+  }
+  return lines.join('\n');
+}
+
+// 取本会话词库里「在草稿中命中」的条目。fail-closed：任一环缺位 ⇒ 空数组（等同于"无词库参考"）。
+//   ⚠ 读取面复用 harness.readVoiceConfig()（= 已归一化的磁盘 voice 段，见 lib/harness.cjs）；
+//     ⛔ 不经请求 args.config —— 请求里带的是**增强**配置，从来不含 voice.dictionary。
+function resolveDictionaryHits(text, harness) {
+  try {
+    if (!text || typeof text !== 'string') return [];
+    const face = (harness && typeof harness.readVoiceConfig === 'function') ? harness.readVoiceConfig() : null;
+    if (!face || typeof face !== 'object') return [];
+    const dict = face.dictionary && typeof face.dictionary === 'object' ? face.dictionary : null;
+    if (!dict) return [];
+    return matchVoiceDictionary(text, dict.entries);
+  } catch (e) {
+    return [];
+  }
+}
 
 function createCorrectionRunner(deps) {
   const d = deps && typeof deps === 'object' ? deps : {};
@@ -90,7 +127,14 @@ function createCorrectionRunner(deps) {
     const chain = buildTryChain(cfg.fallback);
     if (chain.length === 0) return { ok: false, code: 'NO_MODEL', message: friendlyMessage({ code: 'NO_MODEL' }) };
     const historyText = await fetchCorrectionHistory(sessionId, args && args.config);
-    const system = correctionPrompt.replace('{history}', historyText);
+    // CHG-390：词库命中参考（只喂进提示词，⛔ 不预替换草稿）
+    const dictHits = resolveDictionaryHits(text, harness);
+    const dictionaryText = renderDictionaryHits(dictHits);
+    // ⚠ 先替换 {dictionary} 再替换 {history}：历史文本里若恰好出现字面 "{dictionary}"
+    //   不会被二次展开（顺序固定 = 可复现）。
+    const system = correctionPrompt
+      .replace('{dictionary}', dictionaryText)
+      .replace('{history}', historyText);
     let lastFailure = null;
     for (let i = 0; i < chain.length; i++) {
       const entry = chain[i];
@@ -129,9 +173,18 @@ function createCorrectionRunner(deps) {
         if (!timedOut && result.kind === 'ok') {
           const out = cleanCorrectionOutput(result.text, text);
           if (typeof out === 'string' && out.trim() !== '') {
-            hlog('[correction] ok session=' + sessionId + ' chars=' + out.length + ' history=' + historyText.length);
+            hlog('[correction] ok session=' + sessionId + ' chars=' + out.length + ' history=' + historyText.length + ' dictHits=' + dictHits.length);
             const changedFlag = out !== text;
-            return { ok: true, text: out, provider: entry.provider, model: entry.model, historyChars: historyText.length, changed: changedFlag, fallbackUsed: i > 0 };
+            // CHG-390：把本次**进过提示词**的词库条目编号/原文回传，client 侧据此判定
+            //   「哪些词条真的被改对了」并累加 hits（判据在契约层 recordVoiceDictionaryHits，纯字面）。
+            //   ⚠ 只在有命中时附字段 ⇒ 无词库时返回值与既有逐字段一致（不新增噪声）。
+            const dictField = dictHits.length > 0
+              ? { dictionaryHits: dictHits.map((e) => ({ from: e.from, to: e.to })) }
+              : null;
+            return Object.assign(
+              { ok: true, text: out, provider: entry.provider, model: entry.model, historyChars: historyText.length, changed: changedFlag, fallbackUsed: i > 0 },
+              dictField || {},
+            );
           }
           lastFailure = { code: 'EMPTY_RESPONSE' };
         } else {

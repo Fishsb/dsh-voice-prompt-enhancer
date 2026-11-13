@@ -28,8 +28,11 @@ test('CI18N-02 ZH/EN 顶层键集完全相等且保持 317 键', () => {
   // 2026-11-12（环境噪声测量修复）：312 → **317**（+5 键，逐项可归因：`voiceFloorNoBridge` /
   //   `voiceFloorNoPermission` / `voiceFloorNoDevice` / `voiceFloorUnsupported` / `voiceFloorFailed`——
   //   失败原因必须**分开可见**，一律报「采样不足」会把「没给麦克风权限」误导成「环境太安静」）。
-  assert.equal(zhKeys.length, 317);
-  assert.equal(enKeys.length, 317);
+  // 2026-11-13（CHG-390 · 词库改作纠错参考）：317 → **319**（+2 键，逐项可归因：
+  //   `voiceDictDisable`（停用态状态词 —— 修「启用态只显示『启用』被误认为动作按钮」的实机误关病历）/
+  //   `voiceDictToggleHint`（点击后果说明）；中英各加 2，两侧仍相等）。
+  assert.equal(zhKeys.length, 319);
+  assert.equal(enKeys.length, 319);
   assert.deepEqual(zhKeys, enKeys);
 });
 

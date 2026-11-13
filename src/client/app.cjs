@@ -128,8 +128,10 @@ function createClientApp(deps) {
     notifyCorrection: correction.notifyCorrection, correctionState: correction.correctionState,
     planVoicePostprocess: contracts.planVoicePostprocess, voicePostprocessHas: contracts.voicePostprocessHas,
     stripFillers: shared.stripFillers, runFiller: shared.runFiller, rpcMethods: contracts.RPC_METHODS,
-    // UD-0055 / UD-0057（学习词典）：生效/采集都走契约层实现（⛔ 不在热键模块重写）。
-    applyVoiceDictionary: contracts.applyVoiceDictionary,
+    // UD-0055 / UD-0057（学习词典）：采集与生效计数都走契约层实现（⛔ 不在热键模块重写）。
+    // ⚠ CHG-390：原 applyVoiceDictionary（字面硬替换）已退役 —— 词库改作纠错提示词的参考，
+    //   替换决策在 host 侧纠错模型；此处只注入「按实际改对累加 hits」的纯函数。
+    recordVoiceDictionaryHits: contracts.recordVoiceDictionaryHits,
     learnVoiceDictionaryDiff: contracts.learnVoiceDictionaryDiff,
     saveVoiceCfg: voiceApi.saveVoiceCfg,
   }).VoiceHotkeyHost;

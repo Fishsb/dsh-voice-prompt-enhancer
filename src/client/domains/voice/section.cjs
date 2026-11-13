@@ -336,12 +336,17 @@ function DictionaryEditor(props) {
     termInput(e.from, (x) => patchAt(i, { from: x }), t('voiceDictFrom')),
     React.createElement('span', { className: 'dsh-plg-muted' }, '→'),
     termInput(e.to, (x) => patchAt(i, { to: x }), t('voiceDictTo')),
+    // ⚠ 2026-11-13 修复（实机误关病历）：启用态原只显示「启用」二字 ⇒ 看起来像"点击去启用"的动作按钮，
+    //   实际点下去是**停用**（用户就这样把唯一一条词条关掉了，功能因此"完全不生效"）。
+    //   现改为**状态词**：启用 ⇒「已启用」/ 停用 ⇒「已停用」，title 说明点击后果，两态均可读。
     React.createElement('button', {
       type: 'button',
       className: 'dsh-plg-btn dsh-plg-tgl' + (e.enabled !== false ? ' dsh-plg-tgl-on' : ''),
-      'aria-label': t('voiceDictEnable'), title: t('voiceDictEnable'),
+      'aria-label': e.enabled !== false ? t('voiceDictEnable') : t('voiceDictDisable'),
+      'aria-pressed': e.enabled !== false ? 'true' : 'false',
+      title: (e.enabled !== false ? t('voiceDictEnable') : t('voiceDictDisable')) + ' · ' + t('voiceDictToggleHint'),
       onClick: () => patchAt(i, { enabled: e.enabled === false }),
-    }, e.enabled !== false ? t('voiceDictEnable') : '✕'),
+    }, e.enabled !== false ? t('voiceDictEnable') : t('voiceDictDisable')),
     React.createElement('span', { className: 'dsh-plg-muted' }, String(e.hits || 0) + ' ' + t('voiceDictHits')),
     React.createElement('button', {
       type: 'button', className: 'dsh-plg-btn dsh-plg-btn-icononly',
