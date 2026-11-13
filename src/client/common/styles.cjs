@@ -312,6 +312,72 @@ const CSS = [
   '.dsh-enh-btn{margin-right:-12px}',
   '.dsh-vi-btn{margin-right:-12px}',
   '.dsh-vi-wave{transform:translateY(-1px)}'
+  ,
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 2026-11-13（设置面板排版批 · 方案 H）：语音设置面板的排布类（.va-*）
+  //
+  // 用户口径：开关并入下拉（一个下拉 = 一项设置的完整状态）·环境噪声与语音热键完全同构·
+  //   状态收成一行 + 诊断按钮·学习词典改双集合。
+  // 设计纪律（承本仓两次固定像素病历）：
+  //   · 列数由 auto-fit 决定，⛔ 不写死 repeat(2, …)（窄视口要能自动收成一列）；
+  //   · 宽度一律由 flex/grid 分配，⛔ 不给控件写固定 px 宽；
+  //   · 全部走既有 token（label/border/bg 三族），⛔ 不新增颜色字面量。
+  // ═══════════════════════════════════════════════════════════════════════════
+  '.va{display:flex;flex-direction:column;gap:10px}',
+  // 状态区：一行摘要（点/✓/文案 + 右侧诊断按钮）
+  '.va-sum{display:flex;align-items:center;gap:8px;min-width:0}',
+  '.va-dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--dsw-alias-state-success-primary)}',
+  '.va-dot-bad{background:var(--dsw-alias-state-error-primary)}',
+  '.va-sum > b{font-size:13px;line-height:20px;flex:none;font-weight:600;color:var(--dsw-alias-state-success-primary)}',
+  '.va-sum > b.va-bad{color:var(--dsw-alias-state-error-primary)}',
+  // 摘要文本：可收缩 + 省略号（⛔ 不得把右侧诊断按钮挤出视野）
+  '.va-txt{flex:0 1 auto;min-width:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.va-more{margin-left:auto;flex:none;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:16px;padding:3px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}',
+  '.va-more:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+  '.va-more:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+  // 诊断展开区：与摘要同宽的一条浅底区（内容 = 原四行，一字未改）
+  '.va-diag{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:8px}',
+  // 主网格：auto-fit 自动收列（窄视口 ⇒ 单列），列宽下限 320px 保证下拉不被压到不可用
+  '.va-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px 28px}',
+  // 一行 = 固定宽标签列 + 弹性控件列（标签列宽由 .va-lb 统一，全部行对齐）
+  '.va-row{display:flex;align-items:center;gap:10px;min-width:0}',
+  '.va-lb{flex:none;width:76px;min-width:76px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+  '.va-ct{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0}',
+  '.va-ct > .dsh-plg-select,.va-ct > .va-unit,.va-row .dsh-plg-input{flex:1 1 0;min-width:0}',
+  // 尾部图标按钮：热键 ✕ 与噪声 ▶ 的**同一形态**（用户逐字③要求两行完全对齐）
+  '.va-iconbtn{flex:none;width:26px;min-width:26px;height:28px;display:inline-flex;align-items:center;justify-content:center;padding:0;font-size:11px;line-height:1}',
+  // 输入框 + 内嵌单位后缀（dBFS）：后缀绝对定位，输入框右内边距留位
+  '.va-unit{position:relative;display:flex;align-items:center;flex:1 1 0;min-width:0}',
+  '.dsh-plg-input.va-inp{box-sizing:border-box}',
+  '.va-unit > .dsh-plg-input{padding-right:54px}',
+  '.va-suffix{position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
+  // 分组容器（词典段）
+  '.va-grp{display:flex;flex-direction:column;gap:10px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}',
+  '.va-gh{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}',
+  '.va-gh > b{font-size:12px;line-height:16px;font-weight:600;color:var(--dsw-alias-label-secondary);letter-spacing:.02em}',
+  '.va-gh > span{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
+  '.va-hint{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}',
+  '.va-dict-tip{white-space:normal}',
+  // 双集合：两栏并排（⛔ 仍是 auto-fit ⇒ 窄视口自动收成一栏）
+  '.va-dict2{display:grid;grid-template-columns:repeat(auto-fit,minmax(292px,1fr));gap:10px}',
+  '.va-box{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;min-width:0}',
+  // 已停用集合：整块浅底 ⇒ 「不生效」一眼可见（不是靠逐条读文字）
+  '.va-box-off{background:var(--dsw-alias-bg-layer-2)}',
+  '.va-box-h{display:flex;align-items:baseline;gap:8px;font-size:12px;line-height:16px;font-weight:600;color:var(--dsw-alias-label-secondary);flex-wrap:wrap}',
+  '.va-box-h > .va-cnt{font-weight:400;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+  '.va-box-h > em{font-style:normal;font-weight:400;color:var(--dsw-alias-label-tertiary)}',
+  // 词条行：两词输入框等宽 + 命中 + 移组 + 删除（五列由 grid 分配，⛔ 不写死 px）
+  '.va-item{display:flex;align-items:center;gap:6px;min-width:0}',
+  '.va-item > .va-dict-in{flex:1 1 0;min-width:0;padding:4px 9px;font-size:13px}',
+  '.va-arrow{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px}',
+  '.va-hits{flex:none;width:26px;text-align:right;font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+  '.va-mv{flex:none;width:24px;min-width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;padding:0;font-size:11px;line-height:1;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}',
+  '.va-mv:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+  '.va-mv:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+  '.va-emp{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);padding:6px 2px}',
+  '.va-add{margin-top:2px}',
+  // 已停用集合里的词条文本降一档（与浅底呼应，仍可读、可编辑）
+  '.va-box-off .va-item > .va-dict-in{color:var(--dsw-alias-label-tertiary)}',
 ].join('\n');
 
 

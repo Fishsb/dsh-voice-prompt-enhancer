@@ -1,19 +1,22 @@
 'use strict';
-// layout-geometry-lock.test —— ⭐ 本批（2026-10-18 最小改动批）的**长期产出**：
-//   把「全量几何快照对比（除目标外逐项差 0.0）」固化成**回归锁**，
-//   使它今后能自动抓到本仓反复出现的「修一处坏一处」（CHG-179 两次 · CHG-185 · CHG-189）。
+// layout-geometry-lock.test —— 设置页**布局成因**的长期回归锁。
 //
 // ⚠ 为什么用**纯源码/结构判据**而不是量测：
 //   · 本仓的量测装置（scripts/settings-layout-audit.mjs）需要 Chrome headless，
 //     **在 CI / 干净 clone 上不保证可用** ⇒ 若把回归锁写成"必须跑浏览器"，
 //     它会在 CI 上长期 SKIP，等于没有锁（本仓已有此类教训：判据面没有触发点 = 甲类）。
-//   · 因此这里锁**布局的成因结构**（谁是不是 flex 容器 / 谁带 flexWrap / 谁的宽度由内容决定），
+//   · 因此这里锁**布局的成因结构**（谁是不是 flex/grid 容器 / 宽度由谁决定 / 谁与谁同构），
 //     它们**不需要浏览器**，且正是"修一边坏一边"发生的地方。
-//   · 几何量测仍由 scripts/settings-layout-audit.mjs 承担（人工/部署前预检），两者互补：
-//     本文件 = 结构锁（机载、每次 npm test 跑）；audit = 像素锁（装置跑）。
+//   · 几何量测仍由 scripts/settings-layout-audit.mjs 承担（人工/部署前预检），两者互补。
 //
-// ⭐ 本锁的**核心形态**：把「首行容器的布局契约」与「四个 chip 的宽度契约」逐条钉死。
-//   ⚠ 它允许的改动面 = **零**（除非作者同时更新本锁并证明"其余读数不变"）。
+// ⭐ 2026-11-13（设置面板排版批 · 方案 H）：本文件**整组重写**。
+//   病历：旧锁逐条钉死的是「首行 flex + 四个 ToggleChip 固定宽契约 + 静音行滑块读数槽」——
+//   那套结构已被用户裁定的新方案整体替换（开关并入下拉；静音滑块改档位下拉；
+//   环境噪声与热键同构；状态四行收成一行；词典改双集合）。
+//   ⇒ 旧断言全部失去判据对象（读到空段即红）。重写时**锁的意图不变**：
+//     把「每一项设置怎么排」与「两行为什么能严格对齐」逐条钉死，并保留变异自证。
+//   ⚠ 强度只升不降：新增「行标签列固定 / 控件列弹性」「噪声行与热键行同构」「词典双集合」
+//     三类成因判据；旧锁里仍成立的两条（卡片边界 / tab 归属）原样保留。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -31,7 +34,7 @@ function styleSrc() {
   return stylesBody();
 }
 
-// 取某段源码（用起止锚点切），供"只在开关块内判"这类**范围限定**判据使用。
+// 取某段源码（用起止锚点切），供"只在某块内判"这类**范围限定**判据使用。
 //   ⚠ 范围限定是必须的：本仓已实测"全文 grep 会命中别的选择器"给出假阳性 1。
 function sliceBetween(src, startAnchor, endAnchor) {
   const i = src.indexOf(startAnchor);
@@ -41,67 +44,177 @@ function sliceBetween(src, startAnchor, endAnchor) {
   return src.slice(i, j);
 }
 
-test('GEOLOCK-01 首行容器 = flex + wrap + center（不得回 grid —— grid 会撑出方块）', () => {
+// ───────── 2026-11-13（方案 H）：开关并入下拉 ─────────
+
+test('GEOLOCK-01 四个设置项 = 四个「关 + 档位」合一下拉（⛔ 不得退回独立开关按钮）', () => {
   const s = voiceSrc();
-  // 首行：装 >=2 个 ToggleChip 的容器。其 style 必须逐字为这三件。
-  const m = s.match(/React\.createElement\('div', \{ style: \{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '12px' \} \},/);
-  assert.ok(m, '首行容器须是 display:flex + flexWrap:wrap + alignItems:center + gap:12px（⛔ 回 grid 会把开关撑成方块）');
-  // 负控：源码里**不得**再出现 grid 列定义（注释除外）
+  // ① 四个下拉必须都在（按 id 定位，⛔ 不按位置）
+  for (const id of ['dsh-vi-auto-enhance', 'dsh-vi-correction', 'dsh-vi-filler', 'dsh-vi-vad']) {
+    assert.ok(s.includes("'" + id + "'"), '缺设置项下拉：' + id);
+  }
+  // ② 每个下拉的首项必须是「关」（= 停用），且是**值 'off'**（⛔ 不是文本碰巧等于关）
+  assert.equal((s.match(/\{ value: 'off', text: OFF_TEXT \}/g) || []).length, 4,
+    '四个下拉的首项须都是 { value: \'off\', text: OFF_TEXT }（关 = 停用）');
+  // ③ ⛔ 不得退回独立开关按钮（ToggleChip 是上一套结构的名词）
+  assert.equal(/ToggleChip/.test(s), false, '⛔ 不得再出现 ToggleChip（开关已并入下拉）');
+  assert.equal(/dsh-plg-tgl/.test(s), false, '⛔ 不得再渲染 dsh-plg-tgl 按钮（那会让「开关」与「档位」重新分家）');
+});
+
+test('GEOLOCK-02 档位文案不带「开 ·」前缀（有档位本身就是开启）', () => {
+  const s = voiceSrc();
+  // 用户逐字：「开·跟随全局，这种只需要显示跟随全局就可以了，有档位就是开启状态不需要多余标一个开」
+  //   判据：档位 option 的 text 不得由「开」类键拼接 —— 逐个候选声明行断言。
+  //   ⚠ 旧写法把切片起点写成 autoEnhanceOptions、终点 OFF_TEXT —— 两者顺序是反的（OFF_TEXT 在前），
+  //     indexOf 取到 -1 ⇒ 断言读到空段而报红。现按各自的候选声明行逐个切片。
+  const optStmt = (name) => {
+    const i = s.indexOf('const ' + name + ' =');
+    assert.ok(i >= 0, '前置：须能定位 ' + name);
+    const j = s.indexOf(String.fromCharCode(59, 10), i);
+    assert.ok(j > i, '前置：须能定位 ' + name + ' 的语句结尾');
+    return s.slice(i, j + 1);
+  };
+  // ① 三个带档位的下拉：候选文案不得拼开/关（那正是用户点名要删的前缀）
+  for (const name of ['autoEnhanceOptions', 'correctionOptions', 'vadOptions']) {
+    assert.equal(/voiceAutoEnhanceOn|voiceAutoEnhanceOff/.test(optStmt(name)), false,
+      '⛔ ' + name + ' 的候选文案不得拼开/关（有档位本身就是开启）');
+  }
+  // ② 清口水词是纯布尔项（无档位）⇒ 值文本取现有「开」键，这是唯一允许出现的地方
+  assert.ok(optStmt('fillerOptions').includes("t('voiceAutoEnhanceOn')"),
+    '清口水词下拉须有「开」这个值（纯布尔项，无档位可省前缀）');
+});
+test('GEOLOCK-03 行结构 = 固定宽标签列 + 弹性控件列（这是六行能上下对齐的成因）', () => {
+  const s = voiceSrc();
+  // ① 唯一的行构造器（六行共用它 ⇒ 结构必然一致，⛔ 不允许某行自己拼一套）
+  assert.ok(/const field = \(label, control\) => React\.createElement\('div', \{ className: 'va-row' \},/.test(s),
+    '行构造器 field(label, control) 须在位且只此一份');
+  assert.ok(s.includes("React.createElement('span', { className: 'va-lb' }, label)"),
+    '行内标签须走 .va-lb（固定宽列）');
+  assert.ok(s.includes("React.createElement('div', { className: 'va-ct' }, control)"),
+    '行内控件须走 .va-ct（弹性列）');
+  // ② 主网格 = 四个下拉格 + 两个**已具名**的格（hotkeyField / noiseField）
+  //   ⚠ 热键/噪声两行在自己那两处就已经调用 field(...) 构造，网格里只是把结果放进去 ⇒
+  //     网格块内直接调用 field( 的次数是 **4**，不是 6。旧断言写成 6 是数错了层次。
+  const gi = s.indexOf('const controlsGrid = React.createElement');
+  assert.ok(gi > 0, '前置：须能定位主网格');
+  const gj = s.indexOf(String.fromCharCode(10) + '  const body =', gi);
+  assert.ok(gj > gi, '前置：须能定位主网格结束');
+  const gridBlock = s.slice(gi, gj);
+  const inlineFields = gridBlock.split("field(").length - 1;
+  assert.equal(inlineFields, 4, '主网格须恰 4 个内联 field（四个下拉）；实得 ' + inlineFields);
+  assert.ok(/^\s+hotkeyField,/m.test(gridBlock), '主网格须含 hotkeyField（已具名的热键格）');
+  assert.ok(/^\s+noiseField,/m.test(gridBlock), '主网格须含 noiseField（已具名的噪声格）');
+  // 六格全都走同一个 field 构造器（含热键/噪声两处自己的调用）
+  const allFields = s.split("field(t(").length - 1;
+  assert.equal(allFields, 6, '六格须全部走同一个 field 构造器；实得 ' + allFields);
+  // ③ ⛔ 不得退回写死的 gridTemplateColumns（列数须由 CSS auto-fit 决定）
   const codeOnly = s.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
-  assert.equal(/gridTemplateColumns/.test(codeOnly), false, '⛔ 代码层不得再出现 gridTemplateColumns（回退标志）');
+  assert.equal(/gridTemplateColumns/.test(codeOnly), false,
+    '⛔ 代码层不得出现 gridTemplateColumns（列数交给 CSS 的 auto-fit）');
 });
 
-test('GEOLOCK-02 四个 chip 的宽度契约 = width:auto + min-width 兜底 + nowrap（不得回到固定 width:<px>）', () => {
+test('GEOLOCK-04 热键行与噪声行**完全同构**（输入框 + 尾部同一图标按钮）', () => {
   const s = voiceSrc();
-  const chip = sliceBetween(s, 'const ToggleChip = (p) =>', '}, p.onText);');
-  // ① 必须 width:auto（宽度由「文字 + 内边距」决定）
-  assert.ok(/style: \{[^}]*width: 'auto'/.test(chip), '开关须 width:auto ⇒ 宽度由内容决定');
-  // ② ⛔ 不得是固定像素宽（本仓已两次栽在这里：固定宽 + stretch = 方块）
-  assert.equal(/style: \{[^}]*width: '\d+px'/.test(chip), false, '⛔ 开关宽度不得写成固定像素');
-  // ③ min-width 兜底下限必须在（防 EN 最长态被裁）
-  const mw = chip.match(/minWidth: '(\d+)px'/);
-  assert.ok(mw, '开关须有 min-width 兜底');
-  assert.ok(Number(mw[1]) >= 96, 'min-width 须 >= 96px（EN 最长现实取值 102.13px 的兜底）；实得 ' + mw[1]);
-  // ④ nowrap（换行会让高度不可控）
-  assert.ok(/whiteSpace: 'nowrap'/.test(chip), '开关须 white-space:nowrap');
+  // 用户逐字：「环境噪声的样式和语音热键的样式完全对齐一致，就是输入框可以自定义输入，后面一个小符号代表测试」
+  const hot = sliceBetween(s, 'const hotkeyField = field(', 'const noiseField = field(');
+  const noise = sliceBetween(s, 'const noiseField = field(', '\n  // ═══');
+  // ① 两行都是「输入框 + iconBtn(...)」两件，且按钮走**同一个** iconBtn 构造器
+  assert.ok(/className: 'dsh-plg-input va-inp'/.test(hot), '热键行须是 va-inp 输入框');
+  assert.ok(/iconBtn\(t\('voiceHotkeyClear'\)/.test(hot), '热键行尾部须是 iconBtn（清除）');
+  assert.ok(/className: 'dsh-plg-input va-inp'/.test(noise), '噪声行须是 va-inp 输入框');
+  assert.ok(/iconBtn\(measuring/.test(noise), '噪声行尾部须是 iconBtn（测试）');
+  // ② 图标按钮构造器只有一处（两行共用 ⇒ 严格同形）
+  assert.equal((s.match(/const iconBtn = \(title, glyph, onClick, disabled\) =>/g) || []).length, 1,
+    'iconBtn 构造器须只此一份（两行共用同一形态）');
+  // ③ 噪声输入框必须**可编辑**（用户逐字「输入框可以自定义输入」）⇒ ⛔ 不得 readOnly
+  assert.equal(/va-inp', inputMode: 'decimal'[\s\S]{0,200}readOnly/.test(noise), false,
+    '⛔ 噪声输入框不得 readOnly（用户要求可自定义输入）');
+  assert.ok(/readOnly: true/.test(hot), '热键输入框仍是只读（录制键组合，不接受手打）');
+  // ④ 单位 dBFS 以内嵌后缀承载（⛔ 不是旁边的独立文本节点）
+  assert.ok(/className: 'va-suffix'/.test(noise), '噪声单位须走 .va-suffix 内嵌后缀');
 });
 
-test('GEOLOCK-03 热键子行 = flex 项 + flexWrap wrap（内层可折行，但不得靠改外层 flexWrap 解决）', () => {
-  const s = voiceSrc();
-  const m = s.match(/className: 'dsh-plg-row', style: \{ flex: '[^']+', minWidth: '[^']+', flexWrap: 'wrap' \} \},/);
-  assert.ok(m, '热键子行须是带 flex/minWidth/flexWrap:wrap 的 flex 项');
-  // ⚠ 外层首行必须**保留** flexWrap:wrap —— 窄视口要允许整块折行（去掉它=禁止折行，会溢出）
-  assert.ok(/display: 'flex', flexWrap: 'wrap', alignItems: 'center'/.test(s), '⛔ 外层首行须保留 flexWrap:wrap（否则窄视口溢出）');
-});
-
-test('GEOLOCK-04 热键输入框 = border-box（⭐ 本批修复点：这 2px 决定它折不折行）', () => {
-  const s = voiceSrc();
-  const inp = s.match(/style: \{ flex: '1 1 0', minWidth: '96px'([^}]*) \},/);
-  assert.ok(inp, '前置：须能定位热键输入框 style');
-  // ⭐ 本批根因：输入框 min-width:120px 是**内容宽**（content-box）⇒ 实际最小占位 120+2*padding。
-  //   子行最小内容宽 = 72(label) + (120+padding) + 92(清除) + 2*8(gap) > 列宽 322 ⇒ 折行 2px。
-  //   加 box-sizing:border-box 让 min-width 变成**含内边距**的占位 ⇒ 最小内容宽降到 314 ⇒ 不折行。
-  assert.ok(/boxSizing: 'border-box'/.test(inp[1]), '⛔ 热键输入框须 box-sizing:border-box（本批耗时 2px 的修复点，删掉即回退换行）');
-});
-
-test('GEOLOCK-05 静音行 = nowrap + 滑块 flex:1 1 auto + 读数 em 槽（CHG-189 三项成果不得回退）', () => {
-  const s = voiceSrc();
-  // ① 静音行三件必须同一行
-  assert.ok(/className: 'dsh-plg-row dsh-vi-silence-row', style: \{ flexWrap: 'nowrap' \} \},/.test(s),
-    '静音行须 flexWrap:nowrap（折行会把读数甩到滑块下面）');
-  // ② 滑块必须在**规则内**判，不得全文 grep（本仓已实测假阳性）
+test('GEOLOCK-05 两行之所以等宽：CSS 上控件列同宽 + 图标按钮同为固定 26px', () => {
   const st = styleSrc();
-  const rule = st.match(/'\.dsh-vi-slider\{([^}]*)\}'/);
-  assert.ok(rule, 'styles.js 须有 .dsh-vi-slider 规则');
-  assert.ok(/flex:1 1 auto/.test(rule[1]), '滑块须 flex:1 1 auto');
-  assert.equal(/flex:1 1 0\b/.test(rule[1]), false, '⛔ 滑块不得回到 flex:1 1 0');
-  // ③ 读数槽（关/开两态等宽的载体）
-  const rd = st.match(/'\.dsh-vi-silence-row > \.dsh-plg-muted\{([^}]*)\}'/);
-  assert.ok(rd, 'styles.js 须有读数槽规则');
-  assert.ok(/min-width:\s*[\d.]+em/.test(rd[1]), '读数槽须用 em 计最小占位');
+  // ① 行：flex + 固定标签列 + 弹性控件列
+  const row = st.match(/'\.va-row\{([^}]*)\}'/);
+  assert.ok(row, 'styles.js 须有 .va-row 规则');
+  assert.ok(/display:flex/.test(row[1]), '.va-row 须是 flex');
+  assert.ok(/align-items:center/.test(row[1]), '.va-row 须垂直居中（⛔ 不得 stretch）');
+  const lb = st.match(/'\.va-lb\{([^}]*)\}'/);
+  assert.ok(lb, 'styles.js 须有 .va-lb 规则');
+  assert.ok(/flex:none/.test(lb[1]), '标签列须 flex:none（⛔ 不参与再分配，否则各行标签宽不同 ⇒ 控件列起点漂移）');
+  assert.ok(/width:76px/.test(lb[1]), '标签列须有统一固定宽（各行对齐的成因）；实得 ' + lb[1].slice(0, 60));
+  const ct = st.match(/'\.va-ct\{([^}]*)\}'/);
+  assert.ok(ct, 'styles.js 须有 .va-ct 规则');
+  assert.ok(/flex:1 1 auto/.test(ct[1]), '控件列须 flex:1 1 auto（吃满剩余，两行才同宽）');
+  // ② 图标按钮：两行必须同尺寸（本批实测 203/203 + 26/26 严格对齐）
+  const ib = st.match(/'\.va-iconbtn\{([^}]*)\}'/);
+  assert.ok(ib, 'styles.js 须有 .va-iconbtn 规则');
+  assert.ok(/width:26px/.test(ib[1]), '图标按钮须宽 26px（热键 ✕ 与噪声 ▶ 同尺寸）');
+  assert.ok(/min-width:26px/.test(ib[1]), '图标按钮须 min-width:26px（⛔ 不被压窄）');
+  assert.ok(/flex:none/.test(ib[1]), '图标按钮须 flex:none（⛔ 不参与再分配）');
+  // ③ 内嵌后缀：绝对定位 + 输入框右内边距留位（文本不会压到数字上）
+  const sfx = st.match(/'\.va-suffix\{([^}]*)\}'/);
+  assert.ok(sfx, 'styles.js 须有 .va-suffix 规则');
+  assert.ok(/position:absolute/.test(sfx[1]), '.va-suffix 须绝对定位（内嵌）');
+  assert.ok(/pointer-events:none/.test(sfx[1]), '.va-suffix 须 pointer-events:none（不挡输入框点击）');
+  const unitInp = st.match(/'\.va-unit > \.dsh-plg-input\{([^}]*)\}'/);
+  assert.ok(unitInp, 'styles.js 须有 .va-unit > .dsh-plg-input 规则');
+  assert.ok(/padding-right:\d+px/.test(unitInp[1]), '内嵌单位的输入框须留右内边距（否则文字压住 dBFS）');
 });
 
-test('GEOLOCK-06 两块卡片 = 同款边界（并列层级不得回退成"从属"）', () => {
+test('GEOLOCK-06 主网格列数由 auto-fit 决定（⛔ 不写死 repeat(2, …)）', () => {
+  const st = styleSrc();
+  const g = st.match(/'\.va-grid2\{([^}]*)\}'/);
+  assert.ok(g, 'styles.js 须有 .va-grid2 规则');
+  assert.ok(/auto-fit/.test(g[1]), '.va-grid2 须 repeat(auto-fit, …) ⇒ 窄视口自动收成一列');
+  assert.equal(/repeat\(2,/.test(g[1]), false, '⛔ 不得写死两列（窄视口会挤压控件）');
+});
+
+test('GEOLOCK-07 状态区 = 一行摘要 + 诊断按钮（详情默认收起但**不得丢**）', () => {
+  const s = voiceSrc();
+  // ① 一行摘要：点 + 状态词 + 摘要文本 + 右侧按钮
+  assert.ok(/className: 'va-sum'/.test(s), '状态区须是 .va-sum（一行）');
+  assert.ok(/className: 'va-more'/.test(s), '状态区须有 .va-more（诊断按钮）');
+  assert.ok(/'aria-expanded': diagOpen \? 'true' : 'false'/.test(s), '诊断按钮须带 aria-expanded（可访问性）');
+  // ② 默认收起（用户认领项）——初值必须是 false
+  assert.ok(/const \[diagOpen, setDiagOpen\] = React\.useState\(false\)/.test(s),
+    '诊断详情须默认收起（useState(false)）');
+  // ③ ⛔ 折叠不得把三条诊断丢掉（不得静默失效）：组件仍须全部在渲染树里
+  for (const comp of ['OfficialVoiceDiag', 'FillerDiag', 'CorrectionDiag']) {
+    assert.ok(new RegExp('React\\.createElement\\(' + comp + ', props\\)').test(s),
+      '⛔ 折叠后 ' + comp + ' 仍须渲染（不得静默失效）');
+  }
+  // ④ 原始读数出口仍在（title 承载 providers）
+  assert.ok(/title: speechReady \? \('providers='/.test(s), '原始读数须保留在 title（可见文案改白话、读数不丢）');
+});
+
+test('GEOLOCK-08 学习词典 = 双集合（⛔ 不得退回逐条启停按钮）', () => {
+  const s = voiceSrc();
+  // ① 两个集合容器都在（使用中 / 已停用）
+  assert.ok(/const activeBox = React\.createElement\('div', \{ className: 'va-box' \}/.test(s),
+    '「使用中」集合容器须在位');
+  assert.ok(/const offBox = React\.createElement\('div', \{ className: 'va-box va-box-off' \}/.test(s),
+    '「已停用」集合容器须在位（带 va-box-off ⇒ 视觉上不生效）');
+  // ② 状态由 enabled 派生（单一事实源；⛔ 不新增第二份状态字段）
+  assert.ok(/entries\[i\]\.enabled === false \? offIdx : activeIdx/.test(s),
+    '两个集合须由 entries[i].enabled **派生**（单一事实源）');
+  // ③ 移组 = 写 enabled（不是「点开关」）
+  assert.ok(/patchAt\(i, \{ enabled: false \}\)/.test(s), '移出须写 enabled:false');
+  assert.ok(/patchAt\(i, \{ enabled: true \}\)/.test(s), '移回须写 enabled:true');
+  // ④ ⛔ 不得退回每行一个启停开关（旧形态：aria-pressed + voiceDictEnable/Disable 作按钮文本）
+  assert.equal(/'aria-pressed'/.test(s), false, '⛔ 词条不得再有 aria-pressed 启停按钮（旧结构）');
+  assert.equal(/t\('voiceDictEnable'\) \? t\('voiceDictDisable'\)/.test(s), false,
+    '⛔ 不得按 enabled 三元切换按钮文案（那是逐条开关的形态）');
+  // ⑤ 新增入口在「使用中」集合内（新建即生效）
+  assert.ok(/className: 'va-item va-add'/.test(s), '新增行须在「使用中」集合内（va-add）');
+  // ⑥ 浅底 + 降色：已停用的两重可辨识
+  const st = styleSrc();
+  assert.ok(/'\.va-box-off\{([^}]*)\}'/.test(st), 'styles.js 须有 .va-box-off 规则');
+  assert.ok(/\.va-box-off \.va-item > \.va-dict-in\{/.test(st), '已停用集合的词条文本须降一档颜色');
+});
+
+test('GEOLOCK-09 两块卡片 = 同款边界（并列层级不得回退成"从属"）', () => {
   const st = styleSrc();
   const sec = st.match(/'\.dsh-cfg-sec\{([^}]*)\}'/);
   assert.ok(sec, 'styles.js 须有 .dsh-cfg-sec 规则');
@@ -109,76 +222,43 @@ test('GEOLOCK-06 两块卡片 = 同款边界（并列层级不得回退成"从�
   assert.ok(/border-radius/.test(sec[1]), '两块须有圆角');
 });
 
-test('GEOLOCK-07 变异自证：把输入框的 box-sizing 去掉 ⇒ GEOLOCK-04 必红（本锁有牙）', () => {
+// ───────── 变异自证（锁必须"有牙"）─────────
+
+test('GEOLOCK-V1 变异自证：把档位文案拼回「开 ·」前缀 ⇒ GEOLOCK-02 必红', () => {
   const s = voiceSrc();
-  const mutated = s.replace("style: { flex: '1 1 0', minWidth: '96px', boxSizing: 'border-box' }", "style: { flex: '1 1 0', minWidth: '96px' }");
+  const mutated = s.replace(
+    "{ value: '', text: t('voiceAutoEnhanceModeFollow') }",
+    "{ value: '', text: t('voiceAutoEnhanceOn') + ' · ' + t('voiceAutoEnhanceModeFollow') }");
   assert.notEqual(mutated, s, '前置：变异锚点须命中');
-  const inp = mutated.match(/style: \{ flex: '1 1 0', minWidth: '96px'([^}]*) \},/);
-  assert.ok(inp, '前置：变异后仍须能定位');
-  assert.equal(/boxSizing: 'border-box'/.test(inp[1]), false, '变异后应无 box-sizing ⇒ GEOLOCK-04 的断言必红');
+  const mi = mutated.indexOf('const autoEnhanceOptions =');
+  const seg = mutated.slice(mi, mutated.indexOf(String.fromCharCode(59, 10), mi));
+  assert.equal(/voiceAutoEnhanceOn/.test(seg), true, '变异后 GEOLOCK-02 的断言必红（前缀被拼回）');
 });
 
-test('GEOLOCK-08 负控：不动任何文件 ⇒ 本锁全绿（防"恒红"）', () => {
+test('GEOLOCK-V2 变异自证：把噪声行退回只读 ⇒ GEOLOCK-04 必红；改回独立开关 ⇒ GEOLOCK-01 必红', () => {
+  const s = voiceSrc();
+  // ① 噪声输入框加回 readOnly
+  const m1 = s.replace("type: 'text', className: 'dsh-plg-input va-inp', inputMode: 'decimal',",
+    "type: 'text', className: 'dsh-plg-input va-inp', inputMode: 'decimal', readOnly: true,");
+  assert.notEqual(m1, s, '前置：噪声输入框锚点须命中');
+  const noiseSeg = m1.slice(m1.indexOf('const noiseField = field('));
+  assert.equal(/va-inp', inputMode: 'decimal'[\s\S]{0,200}readOnly/.test(noiseSeg.slice(0, 900)), true,
+    '变异后 GEOLOCK-04 的「可编辑」断言必红');
+  // ② 退回独立开关按钮（ToggleChip 重新出现）
+  const m2 = s + '\nconst ToggleChip = (p) => p;\n';
+  assert.equal(/ToggleChip/.test(m2), true, '变异后 GEOLOCK-01 的「无 ToggleChip」断言必红');
+});
+
+test('GEOLOCK-V3 负控：不动任何文件 ⇒ 本锁全绿（防"恒红"）', () => {
   const s = voiceSrc();
   assert.ok(s.length > 1000, '源码可读');
-  assert.ok(/const ToggleChip = \(p\) =>/.test(s), 'ToggleChip 在位');
-  const st = styleSrc();
-  assert.ok(st.length > 1000, 'styles 可读');
+  // 四个下拉 + 行构造器 + 图标构造器都在位
+  assert.ok(/const field = \(label, control\) =>/.test(s), '行构造器在位');
+  assert.ok(/const iconBtn = \(title, glyph, onClick, disabled\) =>/.test(s), '图标构造器在位');
+  assert.ok(/const activeBox = /.test(s) && /const offBox = /.test(s), '词典双集合在位');
+  assert.ok(styleSrc().length > 1000, 'styles 可读');
 });
 
-// ───────── 2026-10-18（R2 · 热键列收窄批）新增回归锁 ─────────
-// 背景：用户裁定 A 方案（P1 收窄热键列内容）⇒ 本批只改两处：
-//   ① 清除按钮⇒图标按钮（必须保留 title + aria-label）；
-//   ② 热键 label⇒极短标记（必须保留 title + aria-label）。
-// 这四条锁就是那两处不得回退的机载判据（GEOLOCK-09..12）+ 变异自证与负控。
-//   ⚠ 为何锁“可发现性”：图标化最大风险不是宽度，而是用户看不懂那个图标是什么——
-//     = 图标化后必须仍能通过悬停/读屏器得知语义。
-
-
-test('GEOLOCK-09 清除按钮 = 图标按钮且 title/aria-label 保留（R2 第 1 处）', () => {
-  const s = voiceSrc();
-  const m = s.match(/className: 'dsh-plg-btn dsh-plg-btn-icononly', title: t\('voiceHotkeyClear'\), 'aria-label': t\('voiceHotkeyClear'\), onClick: clearHotkey \}/);
-  assert.ok(m, '清除按钮须是图标按钮（dsh-plg-btn-icononly）且同时带 title + aria-label（不得变成不可发现）');
-  assert.equal(/style: \{ width: '92px', whiteSpace: 'nowrap' \}/.test(s), false, '⛔ 不得回到 92px 文本按钮（那会把本列内容下限抬回 300+）');
-});
-
-test('GEOLOCK-10 热键 label = 极短标记且 title/aria-label 保留（R2 第 2 处）', () => {
-  const s = voiceSrc();
-  const m = s.match(/React\.createElement\('label', \{ className: 'dsh-plg-label', style: \{ width: 'auto', minWidth: '0' \}, title: t\('voiceHotkeyCombo'\), 'aria-label': t\('voiceHotkeyCombo'\) \}/);
-  assert.ok(m, 'label 须确为极短标记且带 title + aria-label（原文案不丢）');
-  assert.equal(/style: \{ width: '72px', minWidth: '72px' \} \}, t\('voiceHotkeyCombo'\)/.test(s), false, '⛔ 不得回到 72px 文字 label');
-  // 负控范围声明：本条只判热键列内那一个 label，不判全仓其余 label
-  assert.equal(s.split("className: 'dsh-plg-label'").length - 1 >= 1, true, '其余处的 dsh-plg-label 不受本条约束（判据范围 = 热键列）');
-});
-
-test('GEOLOCK-11 热键列内容下限与输入框下限（R2 算术必然）', () => {
-  const s = voiceSrc();
-  assert.ok(/className: 'dsh-plg-row', style: \{ flex: '1 1 160px', minWidth: '160px', flexWrap: 'wrap' \} \},/.test(s),
-    '热键列 min-width 须随两处改动下移到 160px（旧 320px 会让本列必然整块折行）');
-  const inp = s.match(/style: \{ flex: '1 1 0', minWidth: '(\d+)px', boxSizing: 'border-box' \},/);
-  assert.ok(inp, '前置：须能定位热键输入框 style');
-  assert.equal(inp[1], '96', '输入框 min-width 须为 96px（含内边距的占位：96-24-2=70px 内容宽），实得 ' + inp[1]);
-  assert.ok(/boxSizing: 'border-box'/.test(inp[0]), '⛔ 不得丢掉 box-sizing:border-box（GEOLOCK-04 的成果）');
-});
-
-test('GEOLOCK-12 变异自证 + 负控（R2 锁有牙）', () => {
-  const s = voiceSrc();
-  // 变异①：清除按钮退回 92px 文本形态 ⇒ GEOLOCK-09 必红
-  const m1 = s.replace(
-    "className: 'dsh-plg-btn dsh-plg-btn-icononly', title: t('voiceHotkeyClear'), 'aria-label': t('voiceHotkeyClear'), onClick: clearHotkey }",
-    "className: 'dsh-plg-btn', style: { width: '92px', whiteSpace: 'nowrap' }, onClick: clearHotkey }");
-  assert.notEqual(m1, s, '前置：变异①锚点须命中');
-  assert.equal(/className: 'dsh-plg-btn dsh-plg-btn-icononly', title: t\('voiceHotkeyClear'\)/.test(m1), false,
-    '变异①后 GEOLOCK-09 的断言必红');
-  // 变异②：热键列 min-width 回到 320 ⇒ GEOLOCK-11 必红
-  const m2 = s.replace("style: { flex: '1 1 160px', minWidth: '160px', flexWrap: 'wrap' }",
-    "style: { flex: '1 1 320px', minWidth: '320px', flexWrap: 'wrap' }");
-  assert.notEqual(m2, s, '前置：变异②锚点须命中');
-  assert.equal(/flex: '1 1 160px', minWidth: '160px'/.test(m2), false, '变异②后 GEOLOCK-11 的断言必红');
-  // 负控：不动任何文件 ⇒ 上述两条假设均成立（防“恒红”）
-  assert.ok(/className: 'dsh-plg-btn dsh-plg-btn-icononly', title: t\('voiceHotkeyClear'\)/.test(s), '负控：图标按钮在位');
-  assert.ok(/flex: '1 1 160px', minWidth: '160px'/.test(s), '负控：热键列下限在位');
-});
 // ══════════════════════════════════════════════════════════════════════════════
 // 2026-10-18（结构回归锁批）新增：**两条机载锁**（GEOLOCK-A* / GEOLOCK-B*）
 //

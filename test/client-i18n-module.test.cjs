@@ -31,8 +31,15 @@ test('CI18N-02 ZH/EN 顶层键集完全相等且保持 317 键', () => {
   // 2026-11-13（CHG-390 · 词库改作纠错参考）：317 → **319**（+2 键，逐项可归因：
   //   `voiceDictDisable`（停用态状态词 —— 修「启用态只显示『启用』被误认为动作按钮」的实机误关病历）/
   //   `voiceDictToggleHint`（点击后果说明）；中英各加 2，两侧仍相等）。
-  assert.equal(zhKeys.length, 319);
-  assert.equal(enKeys.length, 319);
+  // 2026-11-13（设置面板排版批 · 方案 H）：319 → **332**（+13 键，逐项可归因：
+  //   voiceSwitchOff（下拉首项「关」，取代原开关按钮的开/关文案）/
+  //   voiceDiagShow / voiceDiagHide（状态区一行摘要 + 诊断展开按钮）/
+  //   voiceFloorLabel / voiceFloorUnsetShort / voiceFloorInputTip（环境噪声改可编辑输入框）/
+  //   voiceDictTipShort / voiceDictInUseHint / voiceDictEmptyDisabled /
+  //   voiceDictMoveOut / voiceDictMoveIn / voiceDictDisabledHint（学习词典改双集合）/
+  //   voiceAllOff（三项处理全关时的摘要态）；中英各加 13，两侧仍相等）。
+  assert.equal(zhKeys.length, 332);
+  assert.equal(enKeys.length, 332);
   assert.deepEqual(zhKeys, enKeys);
 });
 
