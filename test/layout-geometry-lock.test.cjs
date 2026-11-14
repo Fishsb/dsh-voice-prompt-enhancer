@@ -85,12 +85,12 @@ test('GEOLOCK-02 档位文案不带「开 ·」前缀（有档位本身就是开
 test('GEOLOCK-03 行结构 = 固定宽标签列 + 弹性控件列（这是六行能上下对齐的成因）', () => {
   const s = voiceSrc();
   // ① 唯一的行构造器（六行共用它 ⇒ 结构必然一致，⛔ 不允许某行自己拼一套）
-  assert.ok(/const field = \(label, control\) => React\.createElement\('div', \{ className: 'va-row' \},/.test(s),
-    '行构造器 field(label, control) 须在位且只此一份');
+  assert.ok(/const field = \(label, \.\.\.controls\) => React\.createElement\('div', \{ className: 'va-row' \},/.test(s),
+    '行构造器 field(label, ...controls) 须在位且只此一份（变长签名 = 不会静默丢控件）');
   assert.ok(s.includes("React.createElement('span', { className: 'va-lb' }, label)"),
     '行内标签须走 .va-lb（固定宽列）');
-  assert.ok(s.includes("React.createElement('div', { className: 'va-ct' }, control)"),
-    '行内控件须走 .va-ct（弹性列）');
+  assert.ok(s.includes("className: 'va-ct' }, controls.length === 1 ? controls[0] : controls"),
+    '行内控件须走 .va-ct（弹性列），多控件合并渲染');
   // ② 主网格 = 四个下拉格 + 两个**已具名**的格（hotkeyField / noiseField）
   //   ⚠ 热键/噪声两行在自己那两处就已经调用 field(...) 构造，网格里只是把结果放进去 ⇒
   //     网格块内直接调用 field( 的次数是 **4**，不是 6。旧断言写成 6 是数错了层次。
@@ -117,20 +117,23 @@ test('GEOLOCK-04 热键行与噪声行**完全同构**（输入框 + 尾部同�
   // 用户逐字：「环境噪声的样式和语音热键的样式完全对齐一致，就是输入框可以自定义输入，后面一个小符号代表测试」
   const hot = sliceBetween(s, 'const hotkeyField = field(', 'const noiseField = field(');
   const noise = sliceBetween(s, 'const noiseField = field(', '\n  // ═══');
-  // ① 两行都是「输入框 + iconBtn(...)」两件，且按钮走**同一个** iconBtn 构造器
-  assert.ok(/className: 'dsh-plg-input va-inp'/.test(hot), '热键行须是 va-inp 输入框');
+  // ① 两行都走同一个 unitField（结构必然同构），按钮都走同一个 iconBtn
+  assert.ok(/unitField\{/.test(hot) || /unitField\(/.test(hot), '热键行须走 unitField');
+  assert.ok(/unitField\(/.test(noise), '噪声行须走 unitField');
   assert.ok(/iconBtn\(t\('voiceHotkeyClear'\)/.test(hot), '热键行尾部须是 iconBtn（清除）');
-  assert.ok(/className: 'dsh-plg-input va-inp'/.test(noise), '噪声行须是 va-inp 输入框');
   assert.ok(/iconBtn\(measuring/.test(noise), '噪声行尾部须是 iconBtn（测试）');
-  // ② 图标按钮构造器只有一处（两行共用 ⇒ 严格同形）
+  // ② 尾图标构造器只有一处（两行共用 ⇒ 严格同形）
   assert.equal((s.match(/const iconBtn = \(title, glyph, onClick, disabled\) =>/g) || []).length, 1,
     'iconBtn 构造器须只此一份（两行共用同一形态）');
+  // ②b unitField 构造器也只有一处（结构同构的根本）
+  assert.equal((s.match(/const unitField = /g) || []).length, 1, 'unitField 构造器须只此一份');
+
   // ③ 噪声输入框必须**可编辑**（用户逐字「输入框可以自定义输入」）⇒ ⛔ 不得 readOnly
-  assert.equal(/va-inp', inputMode: 'decimal'[\s\S]{0,200}readOnly/.test(noise), false,
+  assert.equal(/inputMode: 'decimal'[\s\S]{0,400}readOnly/.test(noise), false,
     '⛔ 噪声输入框不得 readOnly（用户要求可自定义输入）');
   assert.ok(/readOnly: true/.test(hot), '热键输入框仍是只读（录制键组合，不接受手打）');
   // ④ 单位 dBFS 以内嵌后缀承载（⛔ 不是旁边的独立文本节点）
-  assert.ok(/className: 'va-suffix'/.test(noise), '噪声单位须走 .va-suffix 内嵌后缀');
+  assert.ok(/unitField\([\s\S]{0,400}'dBFS'/.test(noise), '噪声单位须作 unitField 的 suffix 参数传入');
 });
 
 test('GEOLOCK-05 两行之所以等宽：CSS 上控件列同宽 + 图标按钮同为固定 26px', () => {
@@ -147,20 +150,41 @@ test('GEOLOCK-05 两行之所以等宽：CSS 上控件列同宽 + 图标按钮�
   const ct = st.match(/'\.va-ct\{([^}]*)\}'/);
   assert.ok(ct, 'styles.js 须有 .va-ct 规则');
   assert.ok(/flex:1 1 auto/.test(ct[1]), '控件列须 flex:1 1 auto（吃满剩余，两行才同宽）');
-  // ② 图标按钮：两行必须同尺寸（本批实测 203/203 + 26/26 严格对齐）
-  const ib = st.match(/'\.va-iconbtn\{([^}]*)\}'/);
-  assert.ok(ib, 'styles.js 须有 .va-iconbtn 规则');
-  assert.ok(/width:26px/.test(ib[1]), '图标按钮须宽 26px（热键 ✕ 与噪声 ▶ 同尺寸）');
-  assert.ok(/min-width:26px/.test(ib[1]), '图标按钮须 min-width:26px（⛔ 不被压窄）');
-  assert.ok(/flex:none/.test(ib[1]), '图标按钮须 flex:none（⛔ 不参与再分配）');
-  // ③ 内嵌后缀：绝对定位 + 输入框右内边距留位（文本不会压到数字上）
-  const sfx = st.match(/'\.va-suffix\{([^}]*)\}'/);
-  assert.ok(sfx, 'styles.js 须有 .va-suffix 规则');
-  assert.ok(/position:absolute/.test(sfx[1]), '.va-suffix 须绝对定位（内嵌）');
-  assert.ok(/pointer-events:none/.test(sfx[1]), '.va-suffix 须 pointer-events:none（不挡输入框点击）');
-  const unitInp = st.match(/'\.va-unit > \.dsh-plg-input\{([^}]*)\}'/);
+  // ② 尾部按钮（2026-11-14 · 用户裁定方案 1）：内置到输入框内右端，不再是框外按钮
+  const ib = st.match(/'[.]va-unit-btn[{]([^}]*)[}]'/);
+  assert.ok(ib, 'styles.js 须有 .va-unit-btn 规则（框内按钮）');
+  assert.ok(/position:absolute/.test(ib[1]), '.va-unit-btn 须绝对定位（内置在输入框内）');
+  assert.ok(/right:6px/.test(ib[1]), '.va-unit-btn 须 right:6px（与下拉箭头同位）');
+  assert.ok(/width:22px/.test(ib[1]), '.va-unit-btn 须 22×22');
+  assert.ok(/border:none/.test(ib[1]), '不得有边框（带边框就退回框外按钮观感）');
+  assert.ok(/background:transparent/.test(ib[1]), '.va-unit-btn 底色须透明');
+  assert.equal(st.includes('.va-iconbtn{'), false, '不得残留 .va-iconbtn（框外按钮形态已退役）');
+  const sfx = st.match(/'[.]va-unit > [.]va-suffix[{]([^}]*)[}]'/);
+  assert.ok(sfx, 'styles.js 须有 .va-unit > .va-suffix 规则');
+  assert.ok(/position:absolute/.test(sfx[1]), '.va-suffix 须绝对定位');
+  assert.ok(/pointer-events:none/.test(sfx[1]), '.va-suffix 须 pointer-events:none');
+  assert.ok(/right:34px/.test(sfx[1]), '.va-suffix 须 right:34px（站在按钮左侧）');
+  const unitInp = st.match(/'[.]va-unit > [.]dsh-plg-input[{]([^}]*)[}]'/);
   assert.ok(unitInp, 'styles.js 须有 .va-unit > .dsh-plg-input 规则');
-  assert.ok(/padding-right:\d+px/.test(unitInp[1]), '内嵌单位的输入框须留右内边距（否则文字压住 dBFS）');
+  assert.ok(/padding-right:34px/.test(unitInp[1]), '无单位行须留 34px 给按钮');
+  const hasSuffix = st.match(/'[.]va-unit[.]va-has-suffix > [.]dsh-plg-input[{]([^}]*)[}]'/);
+  assert.ok(hasSuffix, 'styles.js 须有 .va-unit.va-has-suffix > .dsh-plg-input 规则');
+  assert.ok(/padding-right:70px/.test(hasSuffix[1]), '带单位行须留 70px');
+});
+
+test('GEOLOCK-10 内嵌按钮必须在 .va-unit 内（fail-closed：防静默丢参）', () => {
+  const s = voiceSrc();
+  // 病历：field(label, control) 原只接一个控件，而两行各传了两个 => 按钮被静默丢弃、从未渲染。
+  assert.ok(/const field = [(]label, [.][.][.]controls[)] =>/.test(s),
+    'field() 必须接受变长控件（不得退回 (label, control)）');
+  const uses = s.match(/unitField[(]/g) || [];
+  const defCount = (s.match(/const unitField = /g) || []).length;
+  const useCount = (s.match(/unitField[(][{]/g) || []).length;
+  assert.equal(defCount, 1, 'unitField 构造器须只此一份');
+  assert.ok(useCount >= 2, 'unitField 须被两行各用一次；实得 ' + useCount);
+  assert.ok(/const unitField = [(]inputProps, suffix, actionBtn[)] =>/.test(s), 'unitField 构造器须在位');
+  assert.ok(/className: 'va-unit-btn'/.test(s), 'iconBtn 须产出 .va-unit-btn（框内按钮）');
+  assert.equal(/dsh-plg-btn-icononly va-iconbtn/.test(s), false, 'iconBtn 不得再产出框外按钮类');
 });
 
 test('GEOLOCK-06 主网格恒两栏且**无任何单列切换**（⛔ 不回 auto-fit / 不加 @media 单列分支）', () => {
@@ -249,11 +273,11 @@ test('GEOLOCK-V1 变异自证：把档位文案拼回「开 ·」前缀 ⇒ GEOL
 test('GEOLOCK-V2 变异自证：把噪声行退回只读 ⇒ GEOLOCK-04 必红；改回独立开关 ⇒ GEOLOCK-01 必红', () => {
   const s = voiceSrc();
   // ① 噪声输入框加回 readOnly
-  const m1 = s.replace("type: 'text', className: 'dsh-plg-input va-inp', inputMode: 'decimal',",
-    "type: 'text', className: 'dsh-plg-input va-inp', inputMode: 'decimal', readOnly: true,");
+  const m1 = s.replace("      inputMode: 'decimal',",
+    "      inputMode: 'decimal', readOnly: true,");
   assert.notEqual(m1, s, '前置：噪声输入框锚点须命中');
   const noiseSeg = m1.slice(m1.indexOf('const noiseField = field('));
-  assert.equal(/va-inp', inputMode: 'decimal'[\s\S]{0,200}readOnly/.test(noiseSeg.slice(0, 900)), true,
+  assert.equal(/inputMode: 'decimal'[\s\S]{0,120}readOnly/.test(noiseSeg.slice(0, 900)), true,
     '变异后 GEOLOCK-04 的「可编辑」断言必红');
   // ② 退回独立开关按钮（ToggleChip 重新出现）
   const m2 = s + '\nconst ToggleChip = (p) => p;\n';
@@ -264,7 +288,7 @@ test('GEOLOCK-V3 负控：不动任何文件 ⇒ 本锁全绿（防"恒红"）',
   const s = voiceSrc();
   assert.ok(s.length > 1000, '源码可读');
   // 四个下拉 + 行构造器 + 图标构造器都在位
-  assert.ok(/const field = \(label, control\) =>/.test(s), '行构造器在位');
+  assert.ok(/const field = \(label, \.\.\.controls\) =>/.test(s), '行构造器在位（变长签名）');
   assert.ok(/const iconBtn = \(title, glyph, onClick, disabled\) =>/.test(s), '图标构造器在位');
   assert.ok(/const activeBox = /.test(s) && /const offBox = /.test(s), '词典双集合在位');
   assert.ok(styleSrc().length > 1000, 'styles 可读');

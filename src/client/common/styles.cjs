@@ -354,13 +354,24 @@ const CSS = [
   '.va-lb{flex:none;width:76px;min-width:76px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
   '.va-ct{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0}',
   '.va-ct > .dsh-plg-select,.va-ct > .va-unit,.va-row .dsh-plg-input{flex:1 1 0;min-width:0}',
-  // 尾部图标按钮：热键 ✕ 与噪声 ▶ 的**同一形态**（用户逐字③要求两行完全对齐）
-  '.va-iconbtn{flex:none;width:26px;min-width:26px;height:28px;display:inline-flex;align-items:center;justify-content:center;padding:0;font-size:11px;line-height:1}',
-  // 输入框 + 内嵌单位后缀（dBFS）：后缀绝对定位，输入框右内边距留位
+  // 尾部按钮（2026-11-14 · 用户裁定「方案 1」：内置到输入框最右侧，与下拉箭头同一视觉语言）
+  //   用户原话：「两个按钮我想内置在下拉框最右侧，就是想要保持和其他下拉框的样式统一」
+  //   · 位置：输入框内右端 right:6px，垂直居中
+  //   · 尺寸：22×22（= 下拉箭头 12px + 两侧留白的视觉重量，且不超过输入框行高）
+  //   · 无边框、透明底：hover 才出浅底 —— 与 .dsh-plg-select 的箭头一样是「框内附属」而非独立控件
+  //   ⚠ 不得改成带边框的方块按钮：那就退回「框外按钮」的观感（本批要消除的形态）
+  '.va-unit-btn{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:none;background:transparent;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1;cursor:pointer;border-radius:4px;box-sizing:border-box}',
+  '.va-unit-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+  '.va-unit-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+  '.va-unit-btn:disabled{opacity:.45;cursor:default}',
+  // 输入框 + 内嵌尾部按钮容器
   '.va-unit{position:relative;display:flex;align-items:center;flex:1 1 0;min-width:0}',
   '.dsh-plg-input.va-inp{box-sizing:border-box}',
-  '.va-unit > .dsh-plg-input{padding-right:54px}',
-  '.va-suffix{position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
+  // 右内边距：给按钮让位（22 + right 6 + 间隙 6 = 34）
+  '.va-unit > .dsh-plg-input{padding-right:34px}',
+  // 同时有单位（dBFS）时：单位站在按钮左侧（right:34px），输入框再让出单位宽
+  '.va-unit > .va-suffix{position:absolute;right:34px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
+  '.va-unit.va-has-suffix > .dsh-plg-input{padding-right:70px}',
   // 分组容器（词典段）
   '.va-grp{display:flex;flex-direction:column;gap:10px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}',
   '.va-gh{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}',
