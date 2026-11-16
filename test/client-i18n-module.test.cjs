@@ -15,7 +15,8 @@ test('CI18N-01 旧 i18n chunk 退役，普通模块与测试单一入口在位',
   assert.equal(typeof EN, 'object');
 });
 
-test('CI18N-02 ZH/EN 顶层键集完全相等且保持 317 键', () => {
+// ⚠ PE-41 修复（2026-11-17 · 全功能审查 low）：标题原写「317 键」，实为 **341 键**（断言在下方，逐次上调）。
+test('CI18N-02 ZH/EN 顶层键集完全相等且保持 341 键', () => {
   // 2026-11-08（语音四件收口批）：299 → **305**（+6 键，逐项可归因：`voiceAutoEnhanceModeLabel` /
   //   `voiceAutoEnhanceModeTip` / `voiceAutoEnhanceModeFollow` / `voiceCorrectionWindowLabel` /
   //   `voiceCorrectionWindowTip` / `voiceCorrectionWindowUnit`；中英各加 6，两侧仍相等）。

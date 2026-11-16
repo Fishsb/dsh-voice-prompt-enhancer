@@ -207,7 +207,10 @@ function removeEnFillers(text, removed) {
   return out;
 }
 
-function removeCharSet(text, chars, _unused, removed) {
+// ⚠ PE-40 修复（2026-11-17 · 全功能审查 low）：原签名 `(text, chars, _unused, removed)` 的第三参
+//   **是死参**（函数体从不读它，两个调用点仍传 true/false）。保留位置以不破坏既有调用/导出面，
+//   但显式改名并注明——避免下一个读者以为它是「严格模式开关」。
+function removeCharSet(text, chars, _unusedStrictFlag, removed) {
   var out = text, i = 0;
   while (i < out.length) {
     var ch = out[i];

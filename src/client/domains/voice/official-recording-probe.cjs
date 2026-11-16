@@ -28,7 +28,10 @@
 //     ① **按形状匹配**（{capture:{amplitude}} / {current:{capture:{amplitude}}}），
 //        不依赖 hook 序号、不依赖组件名，官方改 hook 顺序不受影响；
 //     ② **双锚点**：活动容器内的按钮 + 麦克风按钮，任一可进；
-//     ③ 探针失败**显式进诊断区**（abandonReason='recording-probe-failed'），绝不静默；
+//     ③ 探针失败**显式进诊断区**（`abandonReason='recording-probe-unavailable'`），绝不静默；
+//        ⚠ PE-40 修复（2026-11-17 · 全功能审查 low）：此处原写 `'recording-probe-failed'`，
+//        但全仓**无该字符串的赋值点**（唯一赋值在 `official-bridge.cjs:1264` 的
+//        `'recording-probe-unavailable'`）⇒ 注释指了一个永不出现的码，读者据此排障会扑空。
 //     ④ 官方升级 React 大版本时须复验本模块。
 
 // fiber 字段前缀（React 内部约定；不硬编码后缀）

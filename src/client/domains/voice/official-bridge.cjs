@@ -671,43 +671,15 @@ function ovbStartVad(getAmp, onSilence) {
     //   向上速率护栏 OVB_FLOOR_RISE/帧（约 10 s 追平环境变吵，但不会一大跳）。
     // R4（2026-11-11 · #15）：**取样门卡死兜底**。见下方 OVB_FLOOR_STALL_FRAMES 注释。
     let floorStall = 0;
-    // 滑动窗口的变异系数 —— 判「窗口里是真实起伏的噪声」还是「一段平直电平」。
-    //   实测：真实房间噪声 CV ≈ 0.29；平直电平 CV = 0.000。
-    const quietWindowCv = () => {
-      if (quietWindow.length < 8) return 0;
-      let sum = 0;
-      for (let i = 0; i < quietWindow.length; i++) sum += quietWindow[i];
-      const mean = sum / quietWindow.length;
-      if (!(mean > 0)) return 0;
-      let varSum = 0;
-      for (let i = 0; i < quietWindow.length; i++) { const d = quietWindow[i] - mean; varSum += d * d; }
-      return Math.sqrt(varSum / quietWindow.length) / mean;
-    };
-    const stallRecent = [];   // 最近若干帧的 rms（判「环境抬升」vs「持续说话」用）
-    // 只看窗口**后段**（最近 1/3）的变异系数 —— 语音刚结束时整窗仍含高值帧，会把 CV 抬高到 0.8，
-    //   掩盖「尾段其实是平直电平」这一事实。实测：尾段窗口下 flat=0.000 / ripple≈0.25，可分。
-    const stallTailCv = () => {
-      const n = stallRecent.length;
-      if (n < 10) return 0;
-      const from = Math.floor(n * 2 / 3);
-      let sum = 0, cnt = 0;
-      for (let i = from; i < n; i++) { sum += stallRecent[i]; cnt++; }
-      const mean = sum / cnt;
-      if (!(mean > 0)) return 0;
-      let varSum = 0;
-      for (let i = from; i < n; i++) { const d = stallRecent[i] - mean; varSum += d * d; }
-      return Math.sqrt(varSum / cnt) / mean;
-    };
-    const stallCv = () => {
-      if (stallRecent.length < 5) return 0;
-      let sum = 0;
-      for (let i = 0; i < stallRecent.length; i++) sum += stallRecent[i];
-      const mean = sum / stallRecent.length;
-      if (!(mean > 0)) return 0;
-      let varSum = 0;
-      for (let i = 0; i < stallRecent.length; i++) { const d = stallRecent[i] - mean; varSum += d * d; }
-      return Math.sqrt(varSum / stallRecent.length) / mean;
-    };
+    // ⚠⚠ PE-39 修复（2026-11-17 · 全功能审查 low）：**删除三个零调用点的死判据**。
+    //   病历：`quietWindowCv` / `stallTailCv` / `stallCv` 与它们的 `stallRecent` 缓冲在
+    //     「2026-11-12 噪底重写」后**全部失去调用点**（各 1~2 次命中且都在定义处），
+    //     却仍留在这里 ⇒ 读者（和历次审查）会以为「CV 判据在参与决策」= **假安全感**。
+    //   ⛔ 不是「接入判据」：分位法（p20 + p10 钳制）已被实测证明足够，
+    //     再加 CV 门槛只会引入新的调参与误停风险（拆东墙）。故删码，不复活。
+    //   ⚠ 自查订正（2026-11-17）：`stallRecent` **不是**死缓冲（首版误删，实测 23 条用例红）——
+    //     它被下游「取样门卡死兜底」（OVB_FLOOR_STALL_* 那一段）真实消费，故**保留**，只删三个 CV 函数。
+    const stallRecent = [];   // 最近若干帧的 rms（取样门卡死兜底消费）
     // ═══════════════════════════════════════════════════════════════════════════
     // 噪声底估计（2026-11-12 重写：此前叠加了 6 层互相干扰的护栏，现场反复失效）
     // ═══════════════════════════════════════════════════════════════════════════

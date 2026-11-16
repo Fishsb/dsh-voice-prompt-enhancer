@@ -136,7 +136,9 @@ test('GEOLOCK-04 热键行与噪声行**完全同构**（输入框 + 尾部同�
   assert.ok(/unitField\([\s\S]{0,400}'dBFS'/.test(noise), '噪声单位须作 unitField 的 suffix 参数传入');
 });
 
-test('GEOLOCK-05 两行之所以等宽：CSS 上控件列同宽 + 图标按钮同为固定 26px', () => {
+// ⚠ PE-41 修复（2026-11-17 · 全功能审查 low）：标题原写「固定 26px」，而实测 CSS 为 **22px**
+//   （`styles.cjs:203` 的图标按钮）—— 读标题即错，断言本身是对的。
+test('GEOLOCK-05 两行之所以等宽：CSS 上控件列同宽 + 图标按钮同为固定 22px', () => {
   const st = styleSrc();
   // ① 行：flex + 固定标签列 + 弹性控件列
   const row = st.match(/'\.va-row\{([^}]*)\}'/);

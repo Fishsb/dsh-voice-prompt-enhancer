@@ -52,7 +52,7 @@
 > | `models/autochain` | **A** 无参/只读 | 入参仅 noCache 布尔，宽松语义即契约 |
 > | `models/current` | **A** 无参/只读 | 无参只读：读当前选择的模型 |
 > | `models/list` | **A** 无参/只读 | 无参只读：列举 provider 与模型 |
-> | `models/stats` | **A** 无参/只读 | 入参仅 provider/model/inputChars 展示用，非法值退化为空统计（无副作用） |
+> | `models/stats` | **A** 只读 | 入参 provider/model **必填**（缺失返回 `BAD_ARGS`）；`inputChars` 可选展示用；无副作用（⚠ 2026-11-17 订正：原写「非法值退化为空统计」与实现不符） |
 > | `template/default` | **A** 无参/只读 | 无参只读：返回内置模板目录 |
 > | `models/resolve` | **B** 有参·保持宽松 | 有参（provider/model）保持宽松：非法值由下游 resolveModelInfo 兜底，收紧急属 BREAKING |
 >
