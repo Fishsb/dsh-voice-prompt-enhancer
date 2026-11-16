@@ -49,6 +49,8 @@ function createClientHelpers(deps) {
   }
 
   const sessionStores = new Map();
+  // PE-21（2026-11-17）：会话级记忆链**带外**存储（store 卸载时迁移到这里，重建时取回）。
+  const memoryCarry = new Map();
   let activeSessionId = null;
 
   function resultKey(sessionId) {
@@ -79,7 +81,8 @@ function createClientHelpers(deps) {
       error: null,
       seq: 0,
       listeners: new Set(),
-      memoryRounds: [],
+      // PE-21（2026-11-17）：store 重建时取回带外记忆链（卸载时迁走的那些）。
+      memoryRounds: memoryCarry.has(sessionId) ? memoryCarry.get(sessionId).slice() : [],
       optimized: false,
       lastModel: '',
       fallbackUsed: false,
@@ -149,10 +152,19 @@ function createClientHelpers(deps) {
     return !!(session && session.phase === 'enhancing');
   }
 
+  // ⚠⚠ PE-21 修复（2026-11-17 · 全功能审查 medium）：**记忆链不得随 store 卸载丢失**。
+  //   病历：草稿被外部改写会把 phase 复位为 idle（`button.cjs` 的同步 effect），
+  //     随后 `releaseStoreIfIdle` 把**整条 store**删掉 ⇒ `memoryRounds` 一并蒸发。
+  //     实测 rounds 1 → 0，而 i18n 明文承诺「发送消息会清空记忆链」——不是卸载时清。
+  //   修法：卸载前把 `memoryRounds` 迁到**会话级独立 Map**（key = sessionId），
+  //     下次 `storeFor` 重建时取回。⛔ 不清空：清空只发生在「发送消息」路径（既有行为）。
   function releaseStoreIfIdle(sessionId) {
     const session = sessionStores.get(sessionId);
     if (!session) return;
     if (session.phase === 'idle' && session.listeners.size === 0 && session.error === null) {
+      if (Array.isArray(session.memoryRounds) && session.memoryRounds.length > 0) {
+        memoryCarry.set(sessionId, session.memoryRounds.slice());
+      }
       sessionStores.delete(sessionId);
     }
   }
@@ -258,6 +270,8 @@ function createClientHelpers(deps) {
 
           if (config.memory) {
             session.memoryRounds.push({ input: parts.body, output: result.text });
+            // PE-22（2026-11-17）：标记「本轮入过队」，供 undo 判断该不该 pop。
+            session.memoryRoundPushed = true;
             if (session.memoryRounds.length > MEMORY_ROUNDS_MAX) session.memoryRounds.shift();
             writeSeen(sessionId);
           }
@@ -290,7 +304,15 @@ function createClientHelpers(deps) {
     session.error = null;
     session.degraded = [];
     session.truncated = false;
-    session.memoryRounds.pop();
+    // ⚠⚠ PE-22 修复（2026-11-17 · 全功能审查 medium）：**不得无条件 pop**。
+    //   病历：`pop()` 不看本轮是否入队，而 push 只在 `if (config.memory)` 分支发生
+    //     ⇒ 关记忆那一轮撤销会弹掉**上一轮**的记录（实测：memory ON 得 ["first"]，
+    //     memory OFF 再增强后撤销 ⇒ "first" 被删）。
+    //   修法：本轮确实入过队才弹（用 store 上的标记判断，标记在 push 处设置）。
+    if (session.memoryRoundPushed) {
+      session.memoryRounds.pop();
+      session.memoryRoundPushed = false;
+    }
     session.optimized = false;
     clearResultStore(sessionId);
     notify(sessionId);

@@ -11,6 +11,10 @@ function createEnhanceHandlers(deps) {
   const harness = d.harness;
   const llm = d.llm;
   const pending = d.pending;
+  // PE-25/26（2026-11-17）：同 session 串行链 + pending 记录唯一 token 序列。
+  //   ⚠ 两者都是**本模块私有**状态（不导出、不进 pending 记录之外的任何持久面）。
+  const sessionChain = new Map();
+  let enhanceTokenSeq = 0;
   const hlog = d.hlog;
   const herr = d.herr;
   const requestKey = d.requestKey;
@@ -242,7 +246,21 @@ harness.handle(RPC_METHODS.ENHANCE, async (args) => {
 
   // v2.3（§7.3）：记录提前创建（入参校验后）——stage 从 prepare 起可被 progress RPC 轮询
   // v3.0r（细粒度进度反馈）：rec 扩展——startedAt/detailKey/detailArgs/step/total
-  const rec = { cancelled: false, timedOut: false, iterator: null, stage: STAGE_PREPARE, startedAt: Date.now(), detailKey: '', detailArgs: null, step: 0, total: 0 };
+  // ⚠⚠ PE-26 修复（2026-11-17 · 全功能审查 medium）：**pending 必须带唯一 token**。
+  //   病历：同 `(sessionId, seq)` 的两次请求会互相覆盖 pending 记录，前者 `finally` 无条件
+  //     `pending.delete(key)` 把**后者**的记录删掉 ⇒ `enhance/progress` 返回 `NO_RECORD`、
+  //     `cancel` 返回 `ok:true` 但请求**最终仍成功**（读数说反话）。
+  //   修法：每次请求一个 token，`finally` 只在 token 匹配时删。
+  const rec = { cancelled: false, timedOut: false, iterator: null, stage: STAGE_PREPARE, startedAt: Date.now(), detailKey: '', detailArgs: null, step: 0, total: 0, token: ++enhanceTokenSeq };
+  // ⚠⚠ PE-25 修复（2026-11-17 · 全功能审查 medium）：**同 session 串行化**。
+  //   病历：全仓无 mutex/queue ⇒ 同 session 并发两次增强会**并行两条流**（双倍 token +
+  //     两次写回互相覆盖草稿）。实测 stream 调用 2 次、两条都成功。
+  //   修法：按 sessionId 的串行链（前一个 settle 后才开下一个）。⛔ 不用「直接拒绝」——
+  //     那会让「用户连点两次」变成一次可见失败；串行化对用户是无感的。
+  const prev = sessionChain.get(sessionId) || Promise.resolve();
+  let releaseChain = null;
+  sessionChain.set(sessionId, new Promise((resolve) => { releaseChain = resolve; }));
+  try { await prev; } catch (e) { /* 前一个失败不阻断后续 */ }
   pending.set(key, rec);
 
   // 请求状态经 Pipeline 五阶段链式传递（analyze→retrieve→assemble→llm→commit）。
@@ -288,7 +306,13 @@ harness.handle(RPC_METHODS.ENHANCE, async (args) => {
     return { ok: false, code: 'LLM_FAILED', message: friendlyMessage({ code: 'LLM_FAILED' }) };
   } finally {
     if (timeoutDisposer) timeoutDisposer();
-    pending.delete(key);
+    // PE-26（2026-11-17）：只在 token 匹配时删（同 key 的后来者不得被前者删掉）。
+    const cur = pending.get(key);
+    if (cur && cur.token === rec.token) pending.delete(key);
+    // PE-25（2026-11-17）：释放本 session 的串行链，让下一个请求开始。
+    //   ⚠ 不在 release 里删 sessionChain 条目：紧随其后的新请求可能已 set 了新 Promise，
+    //     删条目会把它一起丢掉（丢串行化）。Map 以 sessionId 为键，量级 = 会话数，可接受。
+    if (typeof releaseChain === 'function') releaseChain();
   }
 });
 

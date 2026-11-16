@@ -36,7 +36,8 @@ Restart DSH afterwards (also after updating or removing) — the ✨ button appe
 - **Two entry points** — the official 🎤 button (click to start / click to stop), or the plugin hotkey (tap to start / tap to stop; long-press = hold to talk, release to stop)
   ⚠️ Long-press applies to the **plugin hotkey** only; the official button only responds to clicks (enable and record a hotkey in plugin settings first)
 - **Stop on silence** — auto-stop with a configurable 1-5 s silence window (default 2 s), can be turned off entirely
-- **Filler removal** — local rule-based cleanup of filler words / repeats / drawn-out sounds; no rewriting, no additions (on by default)
+- **Filler removal** — local rule-based cleanup of filler words / repeats / trailing isolated pauses; no rewriting, no additions (on by default)
+  (Note: the previous "drawn-out sounds" wording overstated it — there is no elongation-compression rule; corrected 2026-11-17)
 - **Transcript correction** — word-level fixes after transcription, voice path only (off by default)
 - **Auto-enhance** — trigger enhancement automatically once the transcript is in the draft (off by default)
 
@@ -48,7 +49,7 @@ Settings → "Prompt Enhancer"; changes save immediately:
 
 | Where | What |
 |---|---|
-| Model chain | Model chain; Voice input: hotkey, stop-on-silence (1-5 s), filler removal, transcript correction, auto-enhance |
+| Model chain | Model chain; Voice input: hotkey, stop-on-silence (1-5 s), filler removal, transcript correction (configurable 1-3 rounds), auto-enhance level, ambient-noise measurement, learning dictionary |
 | Optimization | Mode, template, memory switch, context budget, timeout / reply length / output limit |
 
 Capture, transcription and writing back are all handled by DSH's official voice control — the plugin only adds the value-adds above. Audio is not written to disk.
@@ -57,4 +58,4 @@ Capture, transcription and writing back are all handled by DSH's official voice 
 
 [Releases](https://github.com/Fishsb/dsh-voice-prompt-enhancer/releases) · [CHANGELOG](CHANGELOG.md) · [Compatibility notes](docs/compatibility-matrix.md) · Licensed under [Apache-2.0](LICENSE)
 
-> Privacy: the plugin records and reports nothing; enhanced results come from an external LLM — verify before sending.
+> Privacy: the plugin records and reports nothing. However, the following text is sent to **the external LLM you configured**: the prompt-enhancement draft (plus workspace/session excerpts injected per budget), and — during voice correction — the draft together with the last 1-3 conversation rounds (configurable). Verify before sending.

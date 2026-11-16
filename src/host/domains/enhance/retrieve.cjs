@@ -438,6 +438,16 @@ function createRetrieveStage(deps) {
       const text = state.text;
       const sessionId = state.sessionId;
       const rec = state.rec;
+      // ⚠⚠ PE-27 修复（2026-11-17 · 全功能审查 medium）：**取消必须在准备阶段就短路**。
+      //   病历：`cancel` 只置 `rec.cancelled`，而 retrieve 全文件只有 1 处检查（深在搜索循环里）
+      //     ⇒ 用户在准备阶段点取消，检索仍会把**全部**辅助调用跑完（实测 cancel 后仍调用模型
+      //     才返回 ABORTED）⇒ 「取消不省 token」。
+      //   修法：阶段入口即短路（返回空检索块），后续 assemble/generate 的既有检查会接住。
+      if (rec && (rec.cancelled || rec.timedOut)) {
+        state.v2Block = '';
+        state.v2Log = rec.cancelled ? 'cancelled-at-entry' : 'timeout-at-entry';
+        return state;
+      }
       const row = SKILL_MANIFEST[cfg.mode].retrieve || SKILL_MANIFEST[DEFAULT_MODE].retrieve; // v3.2.23 retrieve 声明化（prompts/*/PACKAGE.md）
       state.v2Block = '';
       state.v2Log = 'none';

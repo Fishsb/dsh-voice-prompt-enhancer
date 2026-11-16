@@ -54,7 +54,12 @@ function ModelPluginsSection(props) {
         type: 'button',
         role: 'tab',
         'aria-selected': tab === entry[0],
-        'aria-controls': tabsId + '-panel-' + entry[0],
+        // ⚠⚠ PE-33 修复（2026-11-17 · 全功能审查 medium）：**aria-controls 只能指向存在的节点**。
+        //   病历：原实现对**每个** tab 都设 aria-controls，而下方只渲染**当前** tab 的 panel
+        //     ⇒ 未选中 tab 的 aria-controls 指向不存在的 id（ARIA 1.2 要求引用目标存在；
+        //     读屏器关系断裂，键盘/AT 用户切 tab 拿不到面板上下文）。
+        //   修法：只给**当前** tab 设 aria-controls（面板确实在 DOM 里）；其余不设。
+        ...(tab === entry[0] ? { 'aria-controls': tabsId + '-panel-' + entry[0] } : {}),
         tabIndex: tab === entry[0] ? 0 : -1,
         className: 'dsh-cfg-tab' + (tab === entry[0] ? ' dsh-cfg-tab-active' : ''),
         onClick: () => setTab(entry[0]),

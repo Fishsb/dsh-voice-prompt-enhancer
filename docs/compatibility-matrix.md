@@ -74,9 +74,31 @@
 | `mode` | string | `base` | 优化模式 |
 | `memory` | boolean | `false` | 记忆开关 |
 | `context.budgetChars` | number | `4000` | 上下文预算 |
-| `timeoutMs` | number | 见代码 | 超时 |
-| `maxTokens` | number | 见代码 | token 上限 |
-| `outputLimit` | number | 见代码 | 输出上限 |
+| `context.mode` | string | `smart` | 检索模式 |
+| `context.workspace` | object | `{maxFiles:3,depth:2}` | 工作区检索面（⚠ 2026-11-17 审查补登记，此前漏登） |
+| `params.timeoutMs` | number | `30000` | 超时；**0 = 无限制**。⚠ 2026-11-17 审查订正：文档原写**顶层** `timeoutMs`，实际读 `params.*` |
+| `params.maxTokens` | number | `2000` | token 上限；**0 = provider 默认**（同上订正） |
+| `params.outputLimit` | number | `8000` | 输出上限；**0 = 不截断**（同上订正） |
+| `template.touched` | array | `[]` | 用户手动改过的模式键（⚠ 2026-11-17 补登记） |
+
+### voice 段（`config.voice`）· **2026-11-17 审查补登记**
+
+> ⚠ 本节此前**整段缺失**：第三方按旧文档写 `voice.*` 会被 `sanitizeVoiceCfg` 静默丢弃。
+
+| key | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `voice.filler.enabled` | boolean | `true` | 清口水词开关 |
+| `voice.vad.enabled` | boolean | `true` | 静音监测开关 |
+| `voice.vad.silenceMs` | number | `2000` | 判停时长（1–5 秒 = 1000/2000/3000/4000/5000，非法回落 2000） |
+| `voice.vad.floorDb` | number\|null | `null` | 实测环境噪底（dBFS，-100~0） |
+| `voice.vad.floorMeasuredAt` | number | `0` | 噪底实测时刻（epoch ms） |
+| `voice.hotkey.enabled` | boolean | `false` | 插件热键开关 |
+| `voice.hotkey.combo` | string | `''` | 热键组合（如 `Alt+Backquote`） |
+| `voice.autoEnhance` | boolean | `false` | 识别后自动增强 |
+| `voice.autoEnhanceMode` | string | `''` | 自动增强使用的档位（空 = 跟随全局） |
+| `voice.correction.enabled` | boolean | `false` | 语音纠错开关 |
+| `voice.correction.windowRounds` | number | `1` | 纠错参考的最近 N 轮（1–3，非法回落 1） |
+| `voice.dictionary.entries` | array | `[]` | 学习词典 `[{from,to,hits,at,enabled}]`（≤20 条，词长 ≤10） |
 | `template.mode` | string | `builtin` | 模板模式（兼容保留；新 UI 以每模式 `pick` 为准） |
 | `template.texts` | object | 内置 | 每模式模板（兼容保留；有 `pick` 时不再参与解析） |
 | `template.pick` | object | 各模式 `default` | 每模式选中模板键：`default`（默认模板）/ `increment`（增量模板）/ `custom:<index>`（自定义列表条目）；非法/越界回退 `default`。旧内置键 `supplement` / `dev` 读取时迁为 `increment`（`plugin-host.js:1691`） |

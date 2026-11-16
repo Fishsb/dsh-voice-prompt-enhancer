@@ -33,8 +33,14 @@ function ModelMainSection(props) {
   // 测试集中单点状态：{ index, entry, phase:'testing'|'done', result } | null
   const [testState, setTestState] = React.useState(null);
 
+  // ⚠⚠ PE-23 修复（2026-11-17 · 全功能审查 medium）：**加上限**，与 sanitize 的 8 条对齐。
+  //   病历：本处无上限，而两侧 sanitize（`state.cjs:32` 与 `pure.cjs:597`）硬截 8 条
+  //     ⇒ 用户加第 9 条时界面短暂显示 9 条，**刷新后静默消失**（实测 9→8，无提示）。
+  //   修法：达到上限即不再添加（并让按钮 disabled，见下方 render）。
+  const MODEL_CHAIN_MAX = 8;
   const addModel = () => {
     const next = fallback.slice();
+    if (next.length >= MODEL_CHAIN_MAX) return;  // PE-23：上限与 sanitize 同值，不再「加了又消失」
     const pick = candidates.find((c) => !next.some((x) => x.provider === c.provider && x.model === c.model));
     if (!pick) return;
     next.unshift({ provider: pick.provider, model: pick.model }); // 默认添加到第一个位置（用户需求 2026-08-20）

@@ -61,11 +61,20 @@ function FallbackRow(props) {
   const storedEffort = entry.reasoning && typeof entry.reasoning.effort === 'string' ? entry.reasoning.effort : '';
   const effortOn = !!(entry.reasoning && entry.reasoning.enabled) && storedEffort !== OFF_EFFORT;
   const levelOptions = reasoning ? reasoning.efforts.map((e) => React.createElement('option', { key: e.id, value: e.id }, e.name)) : [];
-  // 关闭态回落到「Off」档位；能力表若没有 off 条目（个别模型）则回落到 defaultEffort / 首个档位
-  const offFallback = reasoning && reasoning.efforts.some((e) => String(e.id) === OFF_EFFORT)
-    ? OFF_EFFORT
-    : (reasoning ? String(reasoning.defaultEffort || (reasoning.efforts[0] && reasoning.efforts[0].id) || '') : '');
-  const levelValue = effortOn ? storedEffort : offFallback;
+  // ⚠⚠ PE-34 修复（2026-11-17 · 全功能审查 medium）：**关闭态不得显示成具体档位**。
+  //   病历：能力表若没有 `off` 条目（个别模型），原实现回落到 `defaultEffort` / 首个档位
+  //     ⇒ 界面显示「High」而配置里**没有 reasoning 字段**（= 关闭）⇒ **显示与实况相反**。
+  //   修法：没有 `off` 条目时，**插入一个合成的「关」选项**并选中它（值仍是 `off`），
+  //     这样「显示 = 配置」恒成立，且用户仍能选到其它档位。
+  const hasOffOption = !!(reasoning && reasoning.efforts.some((e) => String(e.id) === OFF_EFFORT));
+  const levelValue = effortOn ? storedEffort : OFF_EFFORT;
+  const levelOptionsFinal = (function () {
+    if (!reasoning) return [];
+    const base = reasoning.efforts.map((e) => React.createElement('option', { key: e.id, value: e.id }, e.name));
+    // PE-34：能力表缺 off ⇒ 补一个合成项（否则选中值在列表里找不到，浏览器会显示第一项）
+    if (!hasOffOption) base.unshift(React.createElement('option', { key: OFF_EFFORT, value: OFF_EFFORT }, t('cfgReasoningOff')));
+    return base;
+  })();
 
   // v22（C4）/v23：按厂家区分——厂家下拉选项 = providers；模型下拉 = 当前厂家模型 + 该厂家自定义候选
   const currentProvider = providers && providers.find((p) => p.provider === entry.provider);
@@ -118,7 +127,7 @@ function FallbackRow(props) {
             if (next === OFF_EFFORT) { const fix = { ...entry }; delete fix.reasoning; onChange(fix); }
             else onChange({ ...entry, reasoning: { enabled: true, effort: next } });
           },
-          children: levelOptions,
+          children: levelOptionsFinal,
         })
       : null,
     // v23（D4）：测试触发图标（结果由父级集中显示）
