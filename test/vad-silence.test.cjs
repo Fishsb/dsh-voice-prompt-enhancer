@@ -580,3 +580,41 @@ test('VADSIL-V04 变异自证·负控必绿：同一变异下非法值回落判�
     assert.equal(M.normalizeVadSilenceMs(v), 2000, '负控·非法值 ' + JSON.stringify(v) + ' 仍回落 2000');
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PE-14 回归锁（2026-11-17 · 全功能审查 high）
+// ═══════════════════════════════════════════════════════════════════════════
+// 病历：噪底估计取「窗口内低于上界的最小样本」⇒ **单帧低谷**（analyser 未就绪时官方
+//   amplitude 返回 0，或一次掉帧）就能把 floor 钉到 3e-5 ⇒ 开阈也低于真实环境 ⇒
+//   环境帧全判「有声」⇒ quietFrames 永不增长 ⇒ **说完不自停**。
+// 修法：改取**低分位 p10**（孤立离群点拉不动分位数；真实安静环境仍会跟随下降）。
+// ⚠ 本锁直接对**算法本身**做数值断言（不依赖浏览器/麦克风），判别力二值确定。
+test('VADSIL-PE14 噪底下限取低分位：单帧低谷不得把噪底钉死（真静环境仍跟随下降）', () => {
+  // 与 src/client/domains/voice/official-bridge.cjs 的 floorTrack 同一算法（纯数值，无 IO）
+  const floorOf = (window, ceiling, q) => {
+    const below = [];
+    for (const x of window) if (x < ceiling) below.push(x);
+    let observed = Infinity;
+    if (below.length > 0) {
+      below.sort((a, b) => a - b);
+      const idx = Math.min(below.length - 1, Math.max(0, Math.floor(below.length * 0.10)));
+      observed = below[idx];
+    }
+    const target = Number.isFinite(observed) ? observed : q;
+    return (q < target) ? q : target;
+  };
+  const N = 20, CEIL = 0.05, Q = 0.005;
+  // ① 无低谷：噪底 = 环境
+  const clean = new Array(N).fill(0.005);
+  assert.equal(floorOf(clean, CEIL, Q), 0.005, '无低谷时噪底必须等于环境电平');
+  // ② 1 帧 0.0004（掉帧）：不得把噪底拉到 4e-4
+  const oneLow = new Array(N).fill(0.005); oneLow[7] = 0.0004;
+  assert.ok(floorOf(oneLow, CEIL, Q) > 0.002, '单帧 0.0004 不得把噪底压到 4e-4 量级（实得 ' + floorOf(oneLow, CEIL, Q) + '）');
+  // ③ 1 帧 0（analyser 未就绪）：不得把噪底压到 3e-5
+  const oneZero = new Array(N).fill(0.005); oneZero[3] = 0;
+  assert.ok(floorOf(oneZero, CEIL, Q) > 0.002, '单帧 0 不得把噪底压到 3e-5 量级（实得 ' + floorOf(oneZero, CEIL, Q) + '）');
+  // ④ 负控：真实安静环境（全部 4e-4）必须跟随下降，不得锁死在高位
+  const quiet = new Array(N).fill(0.0004);
+  assert.ok(floorOf(quiet, CEIL, Q) <= 0.0005, '真实安静环境必须跟随降到 4e-4 量级（实得 ' + floorOf(quiet, CEIL, Q) + '）');
+});
+

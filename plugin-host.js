@@ -132,6 +132,11 @@ const ERROR_KEYS = Object.freeze({
   ALL_MODELS_UNAVAILABLE: 'errAllModels',
   STREAM_THROW: 'errModelUnreachable',
   VOICE_BUSY: 'errVoiceBusy',
+  // ⚠ PE-30 修复（2026-11-17 · 全功能审查 medium）：热键启动失败曾显示「优化失败」。
+  //   病历：`hotkey.cjs` 在官方语音不可用时置 `st.error='VOICE_OFFICIAL_UNAVAILABLE'`（3 处），
+  //     但本表缺该码 ⇒ `errorKeyOf` 回落到 `errUNKNOWN`（i18n = 「优化失败」）
+  //     ⇒ 用户看到「优化失败」，真实原因（找不到开始按钮 / 官方未就绪）完全不可见。
+  VOICE_OFFICIAL_UNAVAILABLE: 'errVoiceOfficialUnavailable',
 });
 
 function errorKeyOf(code) {
@@ -2008,7 +2013,18 @@ return module.exports;
 'use strict';
 
 // 目标模式：host 模型域普通 CommonJS 模块（构建期由打包器内联）。
-// herr 缺省静默；生产 bundle 内由宿主全局提供（与旧 chunk 同语义）。
+// ⚠⚠ PE-24 修复（2026-11-17 · 全功能审查 medium）：**herr 在模块作用域并不存在**。
+//   病历：注释原写「生产 bundle 内由宿主全局提供」——不成立。产物是**模块表 IIFE**
+//     （见 scripts/lib/module-bundler.mjs 的 `(() => { const __modules = {...}; ... })()`），
+//     每个模块是独立 factory 函数，`herr` 只能来自 `src/host/app.cjs` 的**注入面**，
+//     不会泄漏到本模块作用域。⇒ `resolveAdaptiveChain` 的 catch 路径抛
+//     `ReferenceError: herr is not defined`（直接求值实测复现）。
+//   影响：当前 client 无 autochain 调用方 ⇒ 无现网用户可见损伤；但错误路径本身是坏的
+//     （真出错时会把一个「取当前模型失败」升级成「整个 autochain 崩掉」）。
+//   修法：模块内定义**兜底 herr**（静默），不改任何既有调用点。
+const herr = typeof globalThis !== 'undefined' && typeof globalThis.herr === 'function'
+  ? globalThis.herr
+  : function () { /* 静默兜底：本模块无注入面，不得因日志能力缺失而抛错 */ };
 // v20：内置兜底链硬编码指向 DeepSeek 官方模型（provider=deepseek-official）。
 // 主模型优先取 agentDefaultModel.currentSelection()（当前使用模型），
 // 兜底补足固定为 DeepSeek 官方模型链，不再扫描任意 provider（保证确定性）。
@@ -5046,7 +5062,16 @@ function createCorrectionRunner(deps) {
     }
     const chain = buildTryChain(cfg.fallback);
     if (chain.length === 0) return { ok: false, code: 'NO_MODEL', message: friendlyMessage({ code: 'NO_MODEL' }) };
-    const historyText = await fetchCorrectionHistory(sessionId, args && args.config);
+    // ⚠⚠ PE-15 修复（2026-11-17 · 全功能审查 high）：**windowRounds 产品链路恒 [1,1]**。
+    //   病历：client `hotkey.cjs` 发的是**增强** config（`configState.value`），其 sanitize 白名单
+    //     （`src/client/common/state.cjs` 的 sanitizeV2）**不含 voice 段**（实测该函数体内 `voice`
+    //     出现 0 次）⇒ `args.config.correction` 永远 undefined ⇒ 用户选「参考 3 轮」实际跑 1 轮。
+    //   修法：窗口与 `enabled` **同源**，一律读 `harness.readVoiceConfig()`（= 已归一的磁盘 voice 段，
+    //     见 lib/harness.cjs）。宿主缺该能力时（旧夹具 / 非 bundle 载体）回退请求配置，保持既有语义。
+    //   ⛔ 不改 client 侧：给增强 config 补 voice 段会制造**第二份真相**（与 UD-0051 冲突）。
+    const voiceFace = (harness && typeof harness.readVoiceConfig === 'function') ? harness.readVoiceConfig() : null;
+    const windowCfg = voiceFace && typeof voiceFace === 'object' ? voiceFace : (args && args.config);
+    const historyText = await fetchCorrectionHistory(sessionId, windowCfg);
     // CHG-390：词库命中参考（只喂进提示词，⛔ 不预替换草稿）
     const dictHits = resolveDictionaryHits(text, harness);
     const dictionaryText = renderDictionaryHits(dictHits);

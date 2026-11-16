@@ -160,26 +160,53 @@ test('HCR-07 ⭐fetchCorrectionHistory 用配置窗口读轮次，日志打实�
   assert.deepEqual(seen.at(-1), [1, 1], '非法 ⇒ [1,1]');
 });
 
-test('HCR-08 ⭐runCorrection 把 args.config 传给历史读取（接线不丢参）', async () => {
+// ⚠⚠ PE-15 / PE-05-G2 重写（2026-11-17 · 全功能审查）：原用例**正是那条假绿**。
+//   病历：它把 `windowRounds` 直接塞进 `args.config` 再断言窗口 = [1,2]，
+//     而**产品链路**（client `hotkey.cjs`）发的是**增强** config，其 sanitize 白名单
+//     （`src/client/common/state.cjs` 的 sanitizeV2）**不含 voice 段**（实测函数体内 `voice` 出现 0 次）
+//     ⇒ 真实请求里 `args.config.correction` 永远 undefined ⇒ 窗口恒 [1,1]，
+//     而本用例因为自造入参，一直判绿。
+//   现按**产品语义**重写为两条：
+//     ① 有 harness.readVoiceConfig 时：窗口取自它（与 enabled 同源）；args.config 的 windowRounds 不生效。
+//     ② 无 harness.readVoiceConfig 时（旧夹具/非 bundle 载体）：回退 args.config，保持既有语义。
+const mkHistoryDeps = (seen, overrides) => makeDeps(Object.assign({
+  ctx: {
+    get: () => ({ readSurface: () => Promise.resolve({ events: [] }) }),
+    timer: { timeout: () => () => {} },
+  },
+  splitHistoryRounds: (events, first, last) => { seen.push([first, last]); return []; },
+  llm: {
+    stream: () => ({
+      [Symbol.asyncIterator]() {
+        return { async next() { return { done: true }; } };
+      },
+    }),
+  },
+}, overrides || {}));
+
+test('HCR-08 ⭐窗口轮数取自 harness.readVoiceConfig（与 enabled 同源，不读请求里的 args.config）', async () => {
   const seen = [];
-  const { deps } = makeDeps({
-    ctx: {
-      get: () => ({ readSurface: () => Promise.resolve({ events: [] }) }),
-      timer: { timeout: () => () => {} },
-    },
-    splitHistoryRounds: (events, first, last) => { seen.push([first, last]); return []; },
-    llm: {
-      stream: () => ({
-        [Symbol.asyncIterator]() {
-          let i = 0;
-          return { async next() { return { done: true }; } };
-        },
-      }),
-    },
+  const { deps } = mkHistoryDeps(seen, {
+    harness: { readVoiceConfig: () => ({ correction: { enabled: true, windowRounds: 3 } }) },
   });
   const runner = createCorrectionRunner(deps);
-  await runner.runCorrection({ sessionId: 's', text: '原文', config: { correction: { enabled: true, windowRounds: 2 }, fallback: [{ provider: 'p', model: 'm' }] } });
-  assert.deepEqual(seen.at(-1), [1, 2], 'runCorrection 须把 config 一路传到 splitHistoryRounds');
+  await runner.runCorrection({
+    sessionId: 's', text: '原文',
+    // ⚠ 故意把请求配置写成 1 轮：产品链路里它**不含** voice 段，所以不得影响窗口。
+    config: { correction: { enabled: true, windowRounds: 1 }, fallback: [{ provider: 'p', model: 'm' }] },
+  });
+  assert.deepEqual(seen.at(-1), [1, 3], '窗口必须来自 harness.readVoiceConfig（3 轮），不是请求里的 args.config（1 轮）');
+});
+
+test('HCR-08b 无 harness.readVoiceConfig 时回退 args.config（旧夹具/非 bundle 载体语义不变）', async () => {
+  const seen = [];
+  const { deps } = mkHistoryDeps(seen, { harness: {} });
+  const runner = createCorrectionRunner(deps);
+  await runner.runCorrection({
+    sessionId: 's', text: '原文',
+    config: { correction: { enabled: true, windowRounds: 2 }, fallback: [{ provider: 'p', model: 'm' }] },
+  });
+  assert.deepEqual(seen.at(-1), [1, 2], '无 harness 能力时必须回退请求配置（否则旧载体功能丢失）');
 });
 // ─────────── CHG-390（2026-11-13 · 词库改作纠错参考）：{dictionary} 注入 ───────────
 // 判据（用户 2026-11-13 拍板）：

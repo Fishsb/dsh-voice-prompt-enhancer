@@ -1,7 +1,18 @@
 'use strict';
 
 // 目标模式：host 模型域普通 CommonJS 模块（构建期由打包器内联）。
-// herr 缺省静默；生产 bundle 内由宿主全局提供（与旧 chunk 同语义）。
+// ⚠⚠ PE-24 修复（2026-11-17 · 全功能审查 medium）：**herr 在模块作用域并不存在**。
+//   病历：注释原写「生产 bundle 内由宿主全局提供」——不成立。产物是**模块表 IIFE**
+//     （见 scripts/lib/module-bundler.mjs 的 `(() => { const __modules = {...}; ... })()`），
+//     每个模块是独立 factory 函数，`herr` 只能来自 `src/host/app.cjs` 的**注入面**，
+//     不会泄漏到本模块作用域。⇒ `resolveAdaptiveChain` 的 catch 路径抛
+//     `ReferenceError: herr is not defined`（直接求值实测复现）。
+//   影响：当前 client 无 autochain 调用方 ⇒ 无现网用户可见损伤；但错误路径本身是坏的
+//     （真出错时会把一个「取当前模型失败」升级成「整个 autochain 崩掉」）。
+//   修法：模块内定义**兜底 herr**（静默），不改任何既有调用点。
+const herr = typeof globalThis !== 'undefined' && typeof globalThis.herr === 'function'
+  ? globalThis.herr
+  : function () { /* 静默兜底：本模块无注入面，不得因日志能力缺失而抛错 */ };
 // v20：内置兜底链硬编码指向 DeepSeek 官方模型（provider=deepseek-official）。
 // 主模型优先取 agentDefaultModel.currentSelection()（当前使用模型），
 // 兜底补足固定为 DeepSeek 官方模型链，不再扫描任意 provider（保证确定性）。

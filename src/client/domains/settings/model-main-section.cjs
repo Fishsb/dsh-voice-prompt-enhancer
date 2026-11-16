@@ -171,7 +171,11 @@ function ModelMainSection(props) {
     if (testState) {
       const p = providers.find((x) => x.provider === testState.entry.provider);
       const curIndex = fallback.findIndex((x) => x.provider === testState.entry.provider && x.model === testState.entry.model);
-      const label = '测试 #' + String((curIndex >= 0 ? curIndex : testState.index) + 1) + ' · ' + (p && p.name ? p.name : testState.entry.provider) + ' / ' + testState.entry.model;
+      // PE-32（2026-11-17）：前缀「测试 #」曾硬编码 ⇒ EN 界面中英混排。改走 i18n（缺省回退中文）。
+      const labelPrefix = (typeof t === 'function' && t('cfgTestLabelPrefix') && t('cfgTestLabelPrefix') !== 'cfgTestLabelPrefix')
+        ? t('cfgTestLabelPrefix')
+        : '测试 #';
+      const label = labelPrefix + String((curIndex >= 0 ? curIndex : testState.index) + 1) + ' · ' + (p && p.name ? p.name : testState.entry.provider) + ' / ' + testState.entry.model;
       let resultNode;
       let headStatusNode = null;
       if (testState.phase === 'testing') {
@@ -220,6 +224,15 @@ function ModelMainSection(props) {
         resultNode,
       );
     }
+    // 2026-11-14（模型行统一批）：加号改由 SVG 承载 —— 全角「＋」在雅黑下行盒高于 line-height:20px，
+    //   曾把按钮撑到 34px（三套高度里的最坏一档）。SVG 定尺 12×12，不参与行盒计算。
+    const plusIcon = React.createElement('svg', {
+      width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+      strokeWidth: 1.6, strokeLinecap: 'round', 'aria-hidden': 'true', focusable: 'false',
+    },
+      React.createElement('path', { d: 'M8 3.6v8.8' }),
+      React.createElement('path', { d: 'M3.6 8h8.8' }),
+    );
     body = React.createElement(React.Fragment, null,
       fallback.map((entry, index) => React.createElement(FallbackRow, {
         key: index,
@@ -241,9 +254,13 @@ function ModelMainSection(props) {
       testArea,
       React.createElement('div', { className: 'dsh-plg-row' },
         React.createElement('span', { className: 'dsh-plg-num', style: { visibility: 'hidden' } }),
-        React.createElement('button', { type: 'button', className: 'dsh-plg-btn', onClick: addModel }, t('cfgAddFallback')),
-        React.createElement('button', { type: 'button', className: 'dsh-plg-btn', onClick: restore }, t('cfgRestoreDefaults')),
-        invalidIndexes.length > 0 ? React.createElement('button', { type: 'button', className: 'dsh-plg-btn', onClick: removeInvalid }, t('cfgRemoveInvalid')) : null,
+        // 2026-11-14（模型行统一批 · 用户裁定）：底部两个按钮与厂家下拉**长宽一致** ⇒ 用定宽变体类；
+        //   ⛔ 不改 .dsh-plg-btn 基类（语音页/参数页共 6 处在用）。
+        React.createElement('button', { type: 'button', className: 'dsh-plg-btn dsh-plg-btn-cell', onClick: addModel }, plusIcon, t('cfgAddFallback')),
+        React.createElement('button', { type: 'button', className: 'dsh-plg-btn dsh-plg-btn-cell', onClick: restore }, t('cfgRestoreDefaults')),
+        // 2026-11-15（用户确认）：条件按钮同样纳入 100×32（与另两个按钮同宽）；
+        //   文案同步缩短为「移除失效」—— 原「移除不可用的模型」实测 104px > 100px 内容区。
+        invalidIndexes.length > 0 ? React.createElement('button', { type: 'button', className: 'dsh-plg-btn dsh-plg-btn-cell', onClick: removeInvalid }, t('cfgRemoveInvalid')) : null,
       ),
       React.createElement('p', { className: 'dsh-plg-hint' }, t('cfgRestoreNote')),
             // 2026-08-18（用户需求）：任一模型开启思考 → 模型配置栏最下面红色提醒高推理强度耗时

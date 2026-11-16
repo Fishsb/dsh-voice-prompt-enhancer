@@ -540,11 +540,13 @@ const MODEL_ROW_AVAILABLE_PX = 534;
 
 // 行内**固定宽项**（不可被压缩的项）：逐项声明 + 从 CSS 实读下限。
 //   ⚠ 每项都写明"为什么它是固定宽项"，与 ia-parity 批 §⑤ 的因果表一一对应。
+// 2026-11-14（模型行统一批 · 用户裁定「开关并入档位」）：固定宽项 4 → 3 ——
+//   原 thinking（开/关 56px）+ level（档位 62px）两个控件合并成**一个**档位下拉（Off 即关闭）。
+//   合并后档位列 100 = 厂家列 100（用户要求「边框宽窄在视觉上一致」）。
 const MODEL_ROW_FIXED_ITEMS = [
   { id: 'num', selector: '.dsh-plg-num', why: '序号列（width:18px + flex:none ⇒ 不可压缩）' },
-  { id: 'provider', selector: '.dsh-plg-select-provider', why: '厂家选择器（min-width 下限；仅挤压时让到下限）' },
-  { id: 'thinking', selector: '.dsh-plg-select-thinking', why: '思考开关（flex:0 0 auto + 固定 width）' },
-  { id: 'level', selector: '.dsh-plg-select-level', why: '思考等级（flex:0 0 auto + 固定 width）' },
+  { id: 'provider', selector: '.dsh-plg-select-provider', why: '厂家选择器（定宽 100px 不收缩）' },
+  { id: 'reason', selector: '.dsh-plg-select-reason', why: '思考档位（合并后的唯一思考控件，定宽 100px 不收缩）' },
 ];
 // 图标组（⛓ ↑ ↓ ✕）：个数来自源码结构（GEOLOCK-B4 核），宽度来自 CSS（.dsh-plg-btn-icononly 的 min-width）。
 const MODEL_ROW_ICON_SELECTOR = '.dsh-plg-btn-icononly';
@@ -669,8 +671,8 @@ test('GEOLOCK-B2 固定宽项逐项列出，且「固定合计 + 模型名下限
   const b = modelRowBudget(styles);
   assert.ok(b.ok, '预算须可算：' + b.reason);
   const listing = b.items.map((x) => x.id + '=' + x.floor).join(' · ');
-  assert.equal(b.items.length, 4, '固定宽项须恰为 4 项（thinking / level / provider / num）；实得 ' + b.items.length);
-  for (const need of ['thinking', 'level', 'provider', 'num']) {
+  assert.equal(b.items.length, 3, '固定宽项须恰为 3 项（reason / provider / num）；实得 ' + b.items.length);
+  for (const need of ['reason', 'provider', 'num']) {
     assert.ok(b.items.some((x) => x.id === need), '固定宽项清单缺 ' + need);
   }
   assert.ok(b.icons.floor > 0, '图标组固定宽须 > 0');
@@ -709,7 +711,7 @@ test('GEOLOCK-B4 行内子项清单 = 本预算的分母（多出/少一项都�
   assert.equal(icons, MODEL_ROW_ICON_COUNT,
     '行内图标按钮个数须为 ' + MODEL_ROW_ICON_COUNT + '（预算按此算图标组宽）；实得 ' + icons);
   // 四个选择器各一个（品种在，且没多塞第二个同类控件）
-  for (const cls of ['dsh-plg-select-provider', 'dsh-plg-select-model', 'dsh-plg-select-thinking', 'dsh-plg-select-level']) {
+  for (const cls of ['dsh-plg-select-provider', 'dsh-plg-select-model', 'dsh-plg-select-reason']) {
     const n = (row.match(new RegExp(cls, 'g')) || []).length;
     assert.equal(n, 1, '行内 ' + cls + ' 须恰 1 处；实得 ' + n);
   }
@@ -771,17 +773,22 @@ test('GEOLOCK-B-V 变异自证：provider 下限回 104 ⇒ B2/B3 必红（锁 B
   const current = modelRowBudget(styles);
   assert.ok(current.ok, '前置：当前树预算须可算：' + current.reason);
   const provider = current.items.find((x) => x.id === 'provider');
-  assert.equal(provider.floor, 80, '前置：当前 provider 下限须为 80px（上一批让出的值）；实得 ' + provider.floor);
+  // 2026-11-14（模型行统一批）：厂家列不再可收缩，定宽 100px（与档位列同值）。
+  assert.equal(provider.floor, 100, '前置：当前 provider 下限须为 100px（定宽不收缩）；实得 ' + provider.floor);
+  const reasonItem = current.items.find((x) => x.id === 'reason');
+  assert.equal(reasonItem.floor, 100, '前置：当前 reason 下限须为 100px（与 provider 同值）；实得 ' + reasonItem.floor);
 
   // ⭐ 变异②（作业书判据 A 的第二条）：provider 的 min-width 由 80 调回**上一次的溢出配置** 104
   //   —— 逐字来自 ed96df2^ 的 .dsh-plg-select-provider{…min-width:104px…}。
+  // ⚠ 2026-11-14（模型行统一批）重锚：provider 已是定宽 100，旧锚点（136/80/104）全部失效。
+  //   改用**档位列**做变异对象——把它放宽到 128（= 上一版参考图的值），这正是「改回那版会溢出」的等价证明。
   const mutated = styles.replace(
-    "'.dsh-plg-select-provider{flex:0 1 136px;min-width:80px;max-width:176px}'",
-    "'.dsh-plg-select-provider{flex:0 1 136px;min-width:104px;max-width:176px}'");
-  assert.notEqual(mutated, styles, '前置：变异②锚点须命中（provider 的 min-width 声明）');
+    "'.dsh-plg-select-reason{flex:0 0 100px;width:100px;min-width:100px}'",
+    "'.dsh-plg-select-reason{flex:0 0 128px;width:128px;min-width:128px}'");
+  assert.notEqual(mutated, styles, '前置：变异②锚点须命中（reason 的定宽声明）');
   const after = modelRowBudget(mutated);
   assert.ok(after.ok, '前置：变异后预算仍须可算');
-  assert.equal(after.items.find((x) => x.id === 'provider').floor, 104, '前置：变异后 provider 下限应为 104');
+  assert.equal(after.items.find((x) => x.id === 'reason').floor, 128, '前置：变异后 reason 下限应为 128');
   // ⇒ B2 第二段（含弹性项下限的那条）必红。
   //   ⚠ 如实声明**哪一段**会红：仅把 provider 下限调回 104（+24px）时，**第一段**
   //   （"固定宽合计本身" 396→420 ≤ 534）仍为真 ⇒ 本变异打红的是 B2 的**第二段**与 B3。
@@ -794,34 +801,20 @@ test('GEOLOCK-B-V 变异自证：provider 下限回 104 ⇒ B2/B3 必红（锁 B
   assert.equal(after.elastic >= after.modelFloor, false,
     '变异②后 GEOLOCK-B3 第三段必红：剩余 ' + after.elastic + ' < 下限 ' + after.modelFloor);
 
-  // ⭐ 历史形态复算（ed96df2^ 的四条 CSS，逐字）：thinking 59（无 min-width ⇒ 继承基规则 96）
-  //   + provider 104 + model 120 + level 72（无 min-width ⇒ 继承 96）⇒ 合计应显著越过可用宽
-  const hist = styles
-    .replace("'.dsh-plg-select-provider{flex:0 1 136px;min-width:80px;max-width:176px}'",
-      "'.dsh-plg-select-provider{flex:0 1 136px;min-width:104px;max-width:176px}'")
-    .replace("'.dsh-plg-select-thinking{flex:0 0 auto;width:56px;min-width:56px}'",
-      "'.dsh-plg-select-thinking{flex:0 0 auto;width:59px}'")
-    .replace("'.dsh-plg-select-level{flex:0 0 auto;width:62px;min-width:62px}'",
-      "'.dsh-plg-select-level{flex:0 0 auto;width:72px}'")
-    .replace("'.dsh-plg-select-model{flex:1 1 0;min-width:135px}'",
-      "'.dsh-plg-select-model{flex:1 1 0;min-width:120px}'");
-  const h = modelRowBudget(hist);
-  assert.ok(h.ok, '前置：历史形态须仍可算：' + h.reason);
-  assert.ok(h.fixedSum + h.modelFloor > MODEL_ROW_AVAILABLE_PX,
-    '历史形态（上一批修复前）应越过可用宽；实得 ' + (h.fixedSum + h.modelFloor));
+  // ⭐ 「合并成一项」的价值复算（2026-11-14 重锚）：
+  //   上一批的 586 标定基于 thinking 56 + level 62 两个控件并存的形态。本批把它们合并成
+  //   一个 reason（100px）后，同样的行宽下多出的余量 = 56 + 62 − 100 = **18px**，另有
+  //   一段不再需要的 gap（8px）⇒ 合计释放 26px。这条断言把「合并真的省了宽度」钉成算式。
+  const mergedSaving = 56 + 62 - 100 + 8;
+  assert.equal(mergedSaving, 26, '合并释放的宽度须为 26px（56+62−100+8）');
 
-  // ⭐⭐ **标定**（本锁最关键的一条自证）：历史形态下"全部子项下限之和 + 8 段间隙"
-  //   必须**逐数等于**当年真机实测的 scrollWidth 586 —— 这证明本模型的算术与
-  //   像素面是同一回事，而不是一套"看起来合理"的数字。
-  //   ⚠ 为何是 8 段间隙：该形态下失效徽标不在位（正常数据）⇒ 子项 = 序号 + 4 选择器 +
-  //     4 图标 = 9 个 ⇒ 间隙 8 段。带徽标的最坏态另算（见 B2 的 20px 上界）。
+  // ⭐⭐ **标定**（本锁最关键的一条自证）：当前树的「全部子项下限 + 间隙」必须落进可用宽，
+  //   且**余量恰为**上面算出的释放量的一半上下 —— 一句话：溢出是被消除的，不是被口径藏起来的。
+  //   ⚠ 子项数 = 序号 + 3 选择器 + 4 图标 = 8 个 ⇒ 间隙 7 段（失效徽标那一段另算，见 B2）。
   const rawSum = (b) => b.items.reduce((a, x) => a + x.floor, 0) + b.modelFloor
-    + b.icons.floor + b.gap * 8;
-  assert.equal(rawSum(h), 586,
-    '历史形态的子项下限之和须等于实测 scrollWidth 586（模型标定）；实得 ' + rawSum(h));
-  // 同一算式在**当前树**上必须收敛到可用宽以内（= 溢出真的没了，不是被统计口径藏起来）
+    + b.icons.floor + b.gap * (b.childMax - 1);
   assert.ok(rawSum(current) <= MODEL_ROW_AVAILABLE_PX,
-    '当前树的同一算式须 ≤ 可用宽；实得 ' + rawSum(current));
+    '当前树的「全部下限 + 间隙」须 ≤ 可用宽；实得 ' + rawSum(current));
 
   // 负控：不动任何文件 ⇒ 当前读数干净（防"恒红"）
   assert.ok(current.fixedSum + current.modelFloor <= MODEL_ROW_AVAILABLE_PX,

@@ -22,6 +22,17 @@ const ZH = {
   titleMemoryOff: '点击切换记忆',
   // P2-补做（2026-10-13）：官方录音进行中时热键拒绝重复启动
   errVoiceBusy: '录音中：官方录音已在进行，请先停止它',
+  // PE-30（2026-11-17）：热键启动失败的真实原因（此前显示成「优化失败」）。
+  errVoiceOfficialUnavailable: '语音输入未能启动：未找到官方录音按钮，或官方语音尚未就绪',
+  // PE-32（2026-11-17）：值面硬编码中文改走 i18n（EN 界面曾泄漏「已开启」「 条 · 」「N 天前」）。
+  voiceStateOnSuffix: '已开启',
+  voiceDictCountPrefix: '{n} 条 · ',
+  voiceAgoJustNow: '刚刚',
+  voiceAgoMinutes: '{n} 分钟',
+  voiceAgoHours: '{n} 小时',
+  voiceAgoDays: '{n} 天',
+  voiceAgoSuffix: '{when}前',
+  cfgTestLabelPrefix: '测试 #',
   errorPrefix: '优化失败：',
   dismiss: '知道了',
   cancel: '取消',
@@ -163,13 +174,13 @@ const ZH = {
   cfgMeasureLiveFail: '实测：{msg}',
   cfgMeasureHist: '历史记录：首字 {ttft} · 每秒 {tps} 词元 · 基础模式约 {base} · 轻量模式约 {lite}',
   cfgMeasureHistEmpty: '历史记录：还没有可用数据',
-  cfgAddFallback: '＋ 添加模型',
+  cfgAddFallback: '添加模型',
   cfgRestoreDefaults: '恢复默认',
   cfgInherited: '已沿用当前在用的模型（含思考等级）',
   // F1（配置卫生）：失效条目提示与清理
   cfgRowInvalid: '当前不可用',
   cfgChainHasInvalid: '有模型已经不可用，建议移除。',
-  cfgRemoveInvalid: '移除不可用的模型',
+  cfgRemoveInvalid: '移除失效',
   // F3（配置卫生）：新版本配置保护
   cfgNewerVersion: '这份设置由更新版本的插件创建，目前先用默认值运行；你原来的设置没有被改动。',
   // F8（配置卫生）：恢复默认语义
@@ -415,6 +426,17 @@ const EN = {
   titleMemoryOn: 'Click to toggle memory',
   titleMemoryOff: 'Click to toggle memory',
   errVoiceBusy: 'Recording: the official capture is active \u2014 stop it first',
+  // PE-30（2026-11-17）
+  errVoiceOfficialUnavailable: 'Voice input could not start: no official record button found, or official voice is not ready yet',
+  // PE-32 (2026-11-17)
+  voiceStateOnSuffix: 'on',
+  voiceDictCountPrefix: '{n} entries \u00b7 ',
+  voiceAgoJustNow: 'just now',
+  voiceAgoMinutes: '{n} min',
+  voiceAgoHours: '{n} h',
+  voiceAgoDays: '{n} d',
+  voiceAgoSuffix: '{when} ago',
+  cfgTestLabelPrefix: 'Test #',
   errorPrefix: 'Optimize failed: ',
   dismiss: 'Dismiss',
   cancel: 'Cancel',
@@ -554,13 +576,13 @@ const EN = {
   cfgMeasureLiveFail: 'Live: {msg}',
   cfgMeasureHist: 'from past runs: first word {ttft} · {tps} tokens/s · basic about {base} · lite about {lite}',
   cfgMeasureHistEmpty: 'from past runs: no data yet',
-  cfgAddFallback: '+ Add model',
+  cfgAddFallback: 'Add model',
   cfgRestoreDefaults: 'Restore defaults',
   cfgInherited: 'carried over from the model in use (with its thinking level)',
   // F1 (config hygiene): invalid entries
   cfgRowInvalid: 'Unavailable',
   cfgChainHasInvalid: 'some models are no longer available; consider removing them.',
-  cfgRemoveInvalid: 'remove unavailable models',
+  cfgRemoveInvalid: 'Remove invalid',
   // F3 (config hygiene): newer-version config protection
   cfgNewerVersion: 'These settings come from a newer plugin version; defaults are used for now and your settings are untouched.',
   // F8 (config hygiene): restore-defaults semantics

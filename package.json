@@ -10,7 +10,8 @@
     "plugin-host.js",
     "cordis.patch.yml",
     "README.md",
-    "README.en.md"
+    "README.en.md",
+    "NOTICE"
   ],
   "exports": {
     ".": "./lib/index.cjs",

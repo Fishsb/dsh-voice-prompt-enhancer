@@ -1311,7 +1311,8 @@ test('OVB-V06 变异自证·负控必绿：同一变异下「按钮不存在不�
 
 test('OVB-V07 变异自证·正例必红：把 missed 判定退回「上升沿快照」⇒ 竞态回归判据必须失败', () => {
   const src = readChunk();
-  const anchor = 'if (now === (b.callCountAtPrevSessionEnd || 0)) {';
+  // ⚠ PE-28（2026-11-17）：锚点跟随新形态（新增 `ovbVadEnabled() &&` 前置判据）。
+  const anchor = 'if (ovbVadEnabled() && now === (b.callCountAtPrevSessionEnd || 0)) {';
   // 变异 = 精确复现**被 CDP 证伪**的旧口径：把窗口下界当成「本会话上升沿那一刻的计数」，
   //   而实现里上升沿读到的计数**已经含本次调用**（实测：相位出现时 callCount 已为 1）
   //   ⇒ 拿它当界 ⇒ 真命中被判 missed。运行期拼接变异名（不形成字面量）。
@@ -1426,7 +1427,8 @@ test('OVB-D06 会话结束后再到的帧不得影响已收口语义', async () 
 
 test('OVB-V10 变异自证·正例必红：摘掉 missed 收口判定 ⇒ 迟到落地锁（该计 missed 那一支）必须失败', () => {
   const src = readChunk();
-  const anchor = 'if (now === (b.callCountAtPrevSessionEnd || 0)) {';
+  // ⚠ PE-28（2026-11-17）：锚点跟随新形态（新增 `ovbVadEnabled() &&` 前置判据）。
+  const anchor = 'if (ovbVadEnabled() && now === (b.callCountAtPrevSessionEnd || 0)) {';
   // 变异 = 精确复现本批实测误报的那个写法：**只看 firstCallAt 与「会话起点是否有过调用」的时刻关系**。
   // 实测形态：上一次会话已置 firstCallAt，而本次会话的 getUserMedia 迟到到收口之后 ⇒ 时刻口径判 missed。
   // 运行期拼接变异名（不形成字面量）。

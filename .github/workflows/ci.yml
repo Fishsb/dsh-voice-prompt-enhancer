@@ -23,9 +23,11 @@ jobs:
 
       - name: Syntax check
         run: |
+          # PE-06 修复（2026-11-17 · 全功能审查）：原为**手写 3 件硬编码**，与本地
+          #   `node --check plugin-host.js lib/*.cjs`（16 件）不等价 ⇒ 新增的 lib 模块
+          #   在 CI 里语法零校验。现改为**从磁盘枚举**，与本地口径同源。
           node --check plugin-host.js
-          node --check lib/index.cjs
-          node --check lib/sys.cjs
+          for f in lib/*.cjs; do node --check "$f" || exit 1; done
           # P1 收口清账（2026-10-13）：移除 `node --check lib/updater-host.cjs` ——
           #   该文件随 P1-c「更新执行器退役」整体删除（更新交回官方 plugin manager）
           #   ⇒ 本行自 5d2f21f 起每次 push 必红（Syntax check=failure），
@@ -58,7 +60,7 @@ jobs:
       #      2 与 0 因此**不再同形**（此前两者同为 0，CI 只看退出码时完全无法区分）。
       #   ⚠ 接纳是**环粒度**的残留边界（如实登记，不冒充已堵）：某环在基线内但因**其它原因**未判时机，
       #     退出码仍为 0；补偿 = 接纳行照打该环摘要，CI 日志可读（gate.mjs 头注同条）。
-      - name: Structure gates (dead-code · RPC · prompts · arch-claims)
+      - name: Structure gates (7 rings: dead-code / rpc / prompts / arch-claims / cards / pkg-identity / shared-fns)
         if: always()
         timeout-minutes: 12
         run: npm run gate -- --accept-unjudged=arch-claims,cards
@@ -85,7 +87,10 @@ jobs:
           for f in $files; do
             n=$(basename "$f" .test.cjs)
             t0=$(date +%s)
-            if timeout -s KILL 60 node --test "$f" >"test-reports/$n.log" 2>&1; then
+            # PE-01 配套（2026-11-17 · 全功能审查）：60s → 120s。
+            #   修前实测最慢单件 dead-code-lib-gate 639s（unref 修复后 81s），次慢 bundle-smoke 39s
+            #   ⇒ 120s 留 1.5x 余量。若仍用 60s，即使修了 unref 也会因 dead-code-lib-gate 81s 单独判红。
+            if timeout -s KILL 120 node --test "$f" >"test-reports/$n.log" 2>&1; then
               # P4 尾修（2026-09-19·CI 实测驱动）：此处**不得**再加 --test-force-exit。
               # run 35400375036 的探针实证：test/lib.test.cjs 在 ubuntu 上「已读到文件尾且注册 82 个顶层 test」，
               # 但挂该旗标时 runner 只上报 52/53 条（两次运行数值还不一样）⇒ 29 条用例随子进程提前退出而静默消失，

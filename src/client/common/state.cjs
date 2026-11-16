@@ -56,9 +56,14 @@ function sanitizeV2(parsed) {
     }
   }
   const p = parsed.params && typeof parsed.params === 'object' ? parsed.params : {};
-  if (Number.isInteger(p.timeoutMs) && p.timeoutMs >= 1000 && p.timeoutMs <= 300000) v.params.timeoutMs = p.timeoutMs;
-  if (Number.isInteger(p.maxTokens) && p.maxTokens >= 100 && p.maxTokens <= 16000) v.params.maxTokens = p.maxTokens;
-  if (Number.isInteger(p.outputLimit) && p.outputLimit >= 500 && p.outputLimit <= 50000) v.params.outputLimit = p.outputLimit;
+  // ⚠⚠ PE-18 修复（2026-11-17 · 全功能审查 high）：**「无限制」=0 必须可持久化**。
+  //   病历：UI 提供 0 档（params-tab.cjs 三处 `v === 0 ? t('cfgUnlimited')`）、host 侧
+  //     `pure.cjs` 显式接受 `=== 0`，但本函数只收 `>= 1000 / >= 100 / >= 500` ⇒ 用户选
+  //     「无限制」刷新后回落 {30000,2000,8000}，且**无任何提示**。
+  //   修法：三条判据各补 `=== 0` 分支，与 host `pure.cjs` 同形（单一语义，不新造口径）。
+  if (p.timeoutMs === 0 || (Number.isInteger(p.timeoutMs) && p.timeoutMs >= 1000 && p.timeoutMs <= 300000)) v.params.timeoutMs = p.timeoutMs;
+  if (p.maxTokens === 0 || (Number.isInteger(p.maxTokens) && p.maxTokens >= 100 && p.maxTokens <= 16000)) v.params.maxTokens = p.maxTokens;
+  if (p.outputLimit === 0 || (Number.isInteger(p.outputLimit) && p.outputLimit >= 500 && p.outputLimit <= 50000)) v.params.outputLimit = p.outputLimit;
   const t = parsed.template && typeof parsed.template === 'object' ? parsed.template : {};
   if (t.mode === 'custom' || t.mode === 'builtin') v.template.mode = t.mode;
   // v2.4.7（每模式独立自定义模板）：
@@ -223,9 +228,20 @@ function timerDelay(ms) {
   });
 }
 // 真实校验：localStorage 中的配置与当前 configState 逐字一致（写入即 JSON.stringify）
+// ⚠⚠ PE-11 修复（2026-11-17 · 全功能审查 high）：**「已保存」不得只看 localStorage**。
+//   病历：磁盘写盘失败（PE-10 的 34 次 ENOENT、或 CONFIG_CORRUPT 拒写）在 UI 上**全部显示
+//     「已保存」**——因为本函数只比 localStorage，而 localStorage 在调用 host 之前就已写入。
+//     用户以为设置生效，重启后消失。
+//   修法：**磁盘结果为主**。`diskSaveOk` 由 saveConfig 里 host.call 的返回值维护：
+//     · true  = host 明确返回 ok:true（真正落盘）
+//     · false = host 返回 !ok（CONFIG_WRITE_FAILED / CONFIG_CORRUPT / CONFIG_LOCK_TIMEOUT）
+//     · null  = 尚无结果（未调用 / 在途）⇒ 退回 localStorage 判据（不误报失败）
+//   注意：**不用「比磁盘内容」**——config/set 是顶层键级 merge，磁盘内容与内存值本来就不必逐字相等。
+let diskSaveOk = null;
 function verifyConfigSaved() {
+  if (diskSaveOk === false) return false;
   try {
-    if (!storage) return false;
+    if (!storage) return diskSaveOk === true;
     const raw = storage.getItem(CONFIG_KEY);
     return raw !== null && raw === JSON.stringify(configState.value);
   } catch (e) { return false; }
@@ -287,8 +303,14 @@ function saveConfig(patch) {
       const payload = (patch && typeof patch === 'object' && !Array.isArray(patch)) ? { ...patch } : {};
       // ⚠ 兼容：调用方可能显式传「以 configState.value 为基准的整份」语义（历史行为）；
       //   本修复后仅提交 payload ⇒ 该语义由下方 merge 语义保证（磁盘既有键原样保留）。
-      host.call(RPC_METHODS.CONFIG_SET, { config: payload }).catch(() => {});
-    } catch (e) { /* 忽略 */ }
+      // ⚠ PE-11（2026-11-17）：**把 host 的返回结果接进保存校验**。
+      //   原实现 `.catch(() => {})` 把失败吞成静默（PE-11 的成因之一）。
+      //   现在：ok:true → diskSaveOk=true；!ok → false（UI 显 failed）；网络异常 → false。
+      diskSaveOk = null;
+      host.call(RPC_METHODS.CONFIG_SET, { config: payload }).then((res) => {
+        diskSaveOk = !!(res && res.ok === true);
+      }).catch(() => { diskSaveOk = false; });
+    } catch (e) { diskSaveOk = false; }
   }
   // v2.7.0：保存校验状态机——saving（转圈）→ 1s 后真实校验 → saved/failed；
   // 全状况显式反馈：无 timer 服务也启动状态机（同步校验，结果常驻）

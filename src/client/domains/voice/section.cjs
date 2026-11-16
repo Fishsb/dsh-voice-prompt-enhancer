@@ -41,16 +41,22 @@ function createVoiceSection(deps) {
 const ENHANCE_MODE_VALUES = typeof MODE_VALUES !== 'undefined' && Array.isArray(MODE_VALUES) && MODE_VALUES.length > 0
   ? MODE_VALUES
   : ['base', 'lite', 'standard', 'smart', 'publish'];
-function ovbSinceLabel(at) {
+// ⚠ PE-32 修复（2026-11-17 · 全功能审查 medium）：**时距文案必须走 i18n**。
+//   病历：本函数硬编码「刚刚 / N 分钟 / N 小时 / N 天」⇒ EN 界面实测出现
+//     `title="... 40 天前"` 这类中英混排（键集 332=332 完全相等，问题在**值面硬编码**）。
+//   修法：接受 `t`（缺省回退中文，供无 t 的旧调用点），单位改走 `voiceAgoJustNow` /
+//     `voiceAgoMinutes` / `voiceAgoHours` / `voiceAgoDays` 四个键（ZH/EN 各一条）。
+function ovbSinceLabel(at, t) {
   if (!at || typeof at !== 'number') return '';
   var d = Date.now() - at;
   if (d < 0) return '';
+  var tt = (typeof t === 'function') ? t : function (k) { return (k === 'voiceAgoJustNow' ? '刚刚' : (k === 'voiceAgoMinutes' ? '{n} 分钟' : (k === 'voiceAgoHours' ? '{n} 小时' : '{n} 天'))); };
   var m = Math.floor(d / 60000);
-  if (m < 1) return '刚刚';
-  if (m < 60) return m + ' 分钟';
+  if (m < 1) return tt('voiceAgoJustNow');
+  if (m < 60) return tt('voiceAgoMinutes').replace('{n}', String(m));
   var h = Math.floor(m / 60);
-  if (h < 24) return h + ' 小时';
-  return Math.floor(h / 24) + ' 天';
+  if (h < 24) return tt('voiceAgoHours').replace('{n}', String(h));
+  return tt('voiceAgoDays').replace('{n}', String(Math.floor(h / 24)));
 }
 function OfficialVoiceDiag(props) {
   const t = makeT(props);
@@ -112,7 +118,7 @@ function OfficialVoiceDiag(props) {
   //   ⛔ 不得因此把失败吞掉：三态里前两态都仍然可见，且原始时刻留在 title（lastFailAt=）。
   else if (snap.lastSessionFailed === true) {
     // ⚠ 时距取不到（脏快照 / 老桥无该字段）时**退化为不带时距的写法** —— 不得渲染出「（前）」这类残句。
-    const ago = ovbSinceLabel(snap.lastSessionFailedAt);
+    const ago = ovbSinceLabel(snap.lastSessionFailedAt, t);
     text = ago ? t('voiceOfficialFeedbackSeenAgo').replace('{when}', ago) : t('voiceOfficialFeedbackSeen');
   }
   // F-11 修复（2026-10-13）：键内已含占位符 ⇒ 此处**代入**而不再追加第二个计数
@@ -266,11 +272,12 @@ function CorrectionDiag(props) {
     if (snap.phase === 'failed' && snap.lastFailCode) parts.push(String(snap.lastFailCode));
     // 只有「失败 / 跳过」需要时距（这两态才值得问「是不是陈年旧事」）
     if (snap.phase === 'failed' || snap.phase === 'skipped') {
-      const ago = ovbSinceLabel(snap.lastAt);
+      const ago = ovbSinceLabel(snap.lastAt, t);
       // ⚠ 文案打磨：「刚刚」本身已含时距，再拼「前」会得到「（刚刚前）」这种别扭串
       //   （既有 official 诊断的键是「…（{when}前）」，那里 when 取不到就整段不渲染；
       //    这里同样的**不得出残句**纪律，用「刚刚 ⇒ 不拼前」实现）。
-      if (ago) parts.push(ago === '刚刚' ? ago : ago + '前');
+      // PE-32（2026-11-17）：判据改比 i18n 键值（不再比中文字面量）。
+      if (ago) parts.push(ago === t('voiceAgoJustNow') ? ago : t('voiceAgoSuffix').replace('{when}', ago));
     }
     return parts.length ? '（' + parts.join(' · ') + '）' : '';
   })();
@@ -317,9 +324,27 @@ function DictionaryEditor(props) {
     const normalized = normalizeDictionaryEntries ? normalizeDictionaryEntries(list) : list;
     saveVoiceCfg({ dictionary: { entries: normalized } });
   };
-  const patchAt = (i, patch) => {
-    const next = entries.map((e, k) => (k === i ? Object.assign({}, e, patch) : e));
+  // ⚠⚠ PE-20 修复（2026-11-17 · 全功能审查 medium）：**编辑中间态不得整条丢弃**。
+  //   病历：原实现每次 onChange 都走 commit→normalizeDictionaryEntries，而归一里有
+  //     `if (!from || !to || from === to) continue;` 与 `if (Math.abs(from.length-to.length) > 2) continue;`
+  //     ⇒ 用户清空「改成」框、或输入一个长度差 >2 的目标词时，**该条目当场被丢弃且无提示**
+  //     （实测 `[{from:'绘画',to:''}]` → `[]`）。
+  //   修法：**输入期只改本地值、不归一**；归一与丢弃判定只在**提交时机**（失焦 / 离开该行）做。
+  //     ⚠ 仍保留 normalize 作为最终闸门（防非法值进配置），只是不再逐键触发。
+  const [editing, setEditing] = React.useState(null);  // 正在编辑的行号（null = 无）
+  const [draft, setDraft] = React.useState(null);      // 编辑期草稿（与 entries 分离，避免被归一吃掉）
+  const commitEdit = () => {
+    if (editing === null || !draft) { setEditing(null); setDraft(null); return; }
+    const next = entries.map((e, k) => (k === editing ? Object.assign({}, e, draft) : e));
+    setEditing(null);
+    setDraft(null);
     commit(next);
+  };
+  const patchAt = (i, patch) => {
+    // 编辑期：只更新草稿，**不写配置、不归一**（PE-20）
+    if (editing === i && draft) { setDraft(Object.assign({}, draft, patch)); return; }
+    setEditing(i);
+    setDraft(Object.assign({}, entries[i] || {}, patch));
   };
   const removeAt = (i) => { commit(entries.filter((e, k) => k !== i)); };
   const addOne = () => {
@@ -330,9 +355,11 @@ function DictionaryEditor(props) {
     setBuf({ from: '', to: '' });
   };
   // 词条输入框：宽度由列宽决定（grid 列），不写死像素宽（本仓两次栽在固定像素）。
-  const termInput = (value, onChange, aria) => React.createElement('input', {
+  const termInput = (value, onChange, aria, onBlur) => React.createElement('input', {
     type: 'text', className: 'dsh-plg-input va-dict-in', maxLength: String(dictionaryMaxTerm), 'aria-label': aria,
     value: value, onChange: (e) => onChange(e.target.value),
+    // PE-20（2026-11-17）：失焦即提交（归一在这一刻发生，输入中途不丢条）。
+    onBlur: onBlur || undefined,
   });
   const moveBtn = (title, glyph, onClick) => React.createElement('button', {
     type: 'button', className: 'va-mv', title: title, 'aria-label': title, onClick: onClick,
@@ -342,18 +369,23 @@ function DictionaryEditor(props) {
     title: t('voiceDictDelete'), 'aria-label': t('voiceDictDelete'), onClick: onClick,
   }, '✕');
   // 单条词条：识别成 → 改成 · 命中次数 · 移组 · 删除（两集合共用同一行形态）
-  const entryRow = (e, i, disabled) => React.createElement('div', {
-    className: 'va-item', key: 'dict-' + i + '-' + (disabled ? 'off' : 'on'),
-  },
-    termInput(e.from, (x) => patchAt(i, { from: x }), t('voiceDictFrom')),
+  const entryRow = (e, i, disabled) => {
+    // PE-20（2026-11-17）：编辑期显示草稿值（不归一），失焦时提交并归一。
+    const isEditing = editing === i && draft !== null;
+    const shown = isEditing ? draft : e;
+    return React.createElement('div', {
+      className: 'va-item', key: 'dict-' + i + '-' + (disabled ? 'off' : 'on'),
+    },
+    termInput(shown.from, (x) => patchAt(i, { from: x }), t('voiceDictFrom'), commitEdit),
     React.createElement('span', { className: 'va-arrow', 'aria-hidden': 'true' }, '→'),
-    termInput(e.to, (x) => patchAt(i, { to: x }), t('voiceDictTo')),
+    termInput(shown.to, (x) => patchAt(i, { to: x }), t('voiceDictTo'), commitEdit),
     React.createElement('span', { className: 'va-hits', title: t('voiceDictHits') }, String(e.hits || 0)),
     disabled
       ? moveBtn(t('voiceDictMoveIn') + ' · ' + t('voiceDictToggleHint'), '↩', () => patchAt(i, { enabled: true }))
       : moveBtn(t('voiceDictMoveOut') + ' · ' + t('voiceDictToggleHint'), '⊘', () => patchAt(i, { enabled: false })),
     delBtn(() => removeAt(i)),
-  );
+    );
+  };
   const activeIdx = [];
   const offIdx = [];
   for (let i = 0; i < entries.length; i += 1) (entries[i].enabled === false ? offIdx : activeIdx).push(i);
@@ -373,6 +405,11 @@ function DictionaryEditor(props) {
       React.createElement('span', { className: 'va-arrow', 'aria-hidden': 'true' }, '→'),
       termInput(buf.to, (x) => setBuf({ from: buf.from, to: x }), t('voiceDictTo')),
       React.createElement('span', { className: 'va-hits' }, ''),
+      // 2026-11-15（用户裁定方案 A · 词典新增行对齐）：补一个与「移组」按钮同宽的**占位**。
+      //   病历（真机实测）：词条行 6 个子项、新增行 5 个（没有移组）⇒ 两个输入框各宽 15px
+      //   （59.8 vs 74.8），上下边框对不上。占位不可见、不可点、不参与焦点（aria-hidden），
+      //   ⛔ 不是按钮：不增加可点区域，也不改变任何行为。
+      React.createElement('span', { className: 'va-mv-ph', 'aria-hidden': 'true' }),
       React.createElement('button', {
         type: 'button', className: 'dsh-plg-btn dsh-plg-btn-icononly',
         title: t('voiceDictAdd'), 'aria-label': t('voiceDictAdd'),
@@ -389,7 +426,8 @@ function DictionaryEditor(props) {
   return React.createElement('div', { className: 'va-grp' },
     React.createElement('div', { className: 'va-gh' },
       React.createElement('b', null, t('voiceDictSection')),
-      React.createElement('span', null, (entries.length > 0 ? String(entries.length) + ' 条 · ' : '') + t('voiceDictTipShort')),
+      // PE-32（2026-11-17）：条数前缀走 i18n（EN 界面曾泄漏「 条 · 」）。
+      React.createElement('span', null, (entries.length > 0 ? t('voiceDictCountPrefix').replace('{n}', String(entries.length)) : '') + t('voiceDictTipShort')),
     ),
     React.createElement('div', { className: 'va-dict2' }, activeBox, offBox),
     // 完整说明（原 voiceDictTip 的既有消费者，不得因改版变孤儿）
@@ -406,8 +444,30 @@ function VoiceSection(props) {
   const [status, setStatus] = React.useState(null); // {speech, refine} 就绪态
   // 快捷键录制模式（true=正在等待按键；期间暂停 mic 快捷键监听，避免抢走录制按键）
   const [hotkeyCapture, setHotkeyCapture] = React.useState(false);
+  // ⚠⚠ PE-31 修复（2026-11-17 · 全功能审查 medium）：**Esc 必须真的退出捕获态**。
+  //   病历（两条，同源）：
+  //     ① Esc 分支只清 state 与全局位，**不清焦点** ⇒ 输入框仍在 focus、keydown 仍走本 handler
+  //        ⇒ 实测「Esc 之后再按 KeyA」照样写入 combo（用户以为取消了，实际还在录）。
+  //     ② 唯一的复位路径是 `onBlur`，而折叠设置段 / 切 tab 时 React **不派发 blur**
+  //        （节点直接卸载）⇒ `window.__voiceHotkeyCapturing` 永久为 true ⇒ **热键彻底失效且无提示**。
+  //   修法：① Esc / 选完键后显式 `blur()` 输入框；② 卸载时在 useEffect 清理里复位全局位。
+  const hotkeyInputRef = React.useRef(null);
   const startHotkeyCapture = () => { if (typeof window !== 'undefined') window.__voiceHotkeyCapturing = true; setHotkeyCapture(true); };
-  const cancelHotkeyCapture = () => { if (typeof window !== 'undefined') window.__voiceHotkeyCapturing = false; setHotkeyCapture(false); };
+  const cancelHotkeyCapture = () => {
+    if (typeof window !== 'undefined') window.__voiceHotkeyCapturing = false;
+    setHotkeyCapture(false);
+    // ① 必须一并移走焦点：否则后续按键仍由本 handler 接（实测 Esc 后按 KeyA 仍写入 combo）
+    try {
+      const el = hotkeyInputRef.current;
+      if (el && typeof el.blur === 'function') el.blur();
+    } catch (e) { /* 组件已卸载 */ }
+  };
+  // ② 卸载兜底：折叠 / 切 tab 时 React 不派发 blur，必须在这里复位全局位（否则热键永久失效）
+  React.useEffect(function () {
+    return function () {
+      if (typeof window !== 'undefined') window.__voiceHotkeyCapturing = false;
+    };
+  }, []);
   const onHotkeyKeyDown = (e) => {
     e.preventDefault(); e.stopPropagation();
     if (e.key === 'Escape') { cancelHotkeyCapture(); return; }
@@ -653,6 +713,8 @@ function VoiceSection(props) {
   const hotkeyField = field(t('voiceHotkeyCombo'),
     unitField({
       readOnly: true,
+      // PE-31（2026-11-17）：ref 供 cancelHotkeyCapture 主动移焦点（Esc 后必须真的退出捕获态）。
+      ref: hotkeyInputRef,
       value: hotkeyCapture ? t('voiceHotkeyCapturing') : voiceHotkeyDisplay(v.hotkey.combo),
       placeholder: t('voiceHotkeyNone'),
       title: t('voiceHotkeyCombo') + '\uFF1A' + (hotkeyCapture ? t('voiceHotkeyCapturing') : (voiceHotkeyDisplay(v.hotkey.combo) || t('voiceHotkeyNone'))),
@@ -686,8 +748,9 @@ function VoiceSection(props) {
   //   ⚠ 只挑有内容可报的几条；全部关闭 ⇒ 空串（那本身也是有效信息，由左侧状态词承担）
   const summaryGist = (function () {
     const parts = [];
-    if (fillerOn) parts.push(t('voiceRefineShort') + '已开启');
-    if (correctionOn) parts.push(t('voiceCorrectionShort') + '已开启');
+    // PE-32（2026-11-17）：后缀走 i18n（EN 界面曾泄漏「已开启」）。
+    if (fillerOn) parts.push(t('voiceRefineShort') + t('voiceStateOnSuffix'));
+    if (correctionOn) parts.push(t('voiceCorrectionShort') + t('voiceStateOnSuffix'));
     if (vadOn) parts.push(t('voiceVadShort') + ' ' + silenceSec + ' ' + t('voiceVadSilenceUnit'));
     // 三项全关 ⇒ 明说（⛔ 空白会让人以为是没加载）
     if (!parts.length) parts.push(t('voiceAllOff'));

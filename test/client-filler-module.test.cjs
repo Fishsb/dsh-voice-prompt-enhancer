@@ -14,6 +14,10 @@ test('CFM-01 旧 chunk 已退役，普通模块在位（不得双份）', () => 
   assert.equal(fs.existsSync(path.join(REPO_ROOT, FILLER_MODULE_REL)), true, '普通模块必须存在：' + FILLER_MODULE_REL);
 });
 
+// ⚠ PE-19（2026-11-17）：本锁的语义是「模块正文 == 冻结基线，差异只在尾部导出」。
+//   修 PE-19（补白名单）时按设计**同时重冻基线**（`test/fixtures/client-filler/filler-source.txt`
+//   取新的模块正文），否则锁会把「合法的功能修复」判成漂移 —— 这正是它作为等价锁的本意：
+//   正文改动必须**显式伴随**基线重冻，让改动可见，而不是让锁失效。
 test('CFM-02 新模块正文与冻结基线逐字相同（仅尾部追加导出）', () => {
   const baseline = fillerBaselineText();
   const actual = fillerModuleText();

@@ -126,7 +126,16 @@ function createCorrectionRunner(deps) {
     }
     const chain = buildTryChain(cfg.fallback);
     if (chain.length === 0) return { ok: false, code: 'NO_MODEL', message: friendlyMessage({ code: 'NO_MODEL' }) };
-    const historyText = await fetchCorrectionHistory(sessionId, args && args.config);
+    // ⚠⚠ PE-15 修复（2026-11-17 · 全功能审查 high）：**windowRounds 产品链路恒 [1,1]**。
+    //   病历：client `hotkey.cjs` 发的是**增强** config（`configState.value`），其 sanitize 白名单
+    //     （`src/client/common/state.cjs` 的 sanitizeV2）**不含 voice 段**（实测该函数体内 `voice`
+    //     出现 0 次）⇒ `args.config.correction` 永远 undefined ⇒ 用户选「参考 3 轮」实际跑 1 轮。
+    //   修法：窗口与 `enabled` **同源**，一律读 `harness.readVoiceConfig()`（= 已归一的磁盘 voice 段，
+    //     见 lib/harness.cjs）。宿主缺该能力时（旧夹具 / 非 bundle 载体）回退请求配置，保持既有语义。
+    //   ⛔ 不改 client 侧：给增强 config 补 voice 段会制造**第二份真相**（与 UD-0051 冲突）。
+    const voiceFace = (harness && typeof harness.readVoiceConfig === 'function') ? harness.readVoiceConfig() : null;
+    const windowCfg = voiceFace && typeof voiceFace === 'object' ? voiceFace : (args && args.config);
+    const historyText = await fetchCorrectionHistory(sessionId, windowCfg);
     // CHG-390：词库命中参考（只喂进提示词，⛔ 不预替换草稿）
     const dictHits = resolveDictionaryHits(text, harness);
     const dictionaryText = renderDictionaryHits(dictHits);

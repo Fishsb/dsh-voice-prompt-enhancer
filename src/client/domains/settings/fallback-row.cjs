@@ -52,9 +52,20 @@ function FallbackRow(props) {
     return () => { cancelled = true; };
   }, [entry.provider, entry.model]);
 
-  const effortOn = !!(entry.reasoning && entry.reasoning.enabled);
+  // 2026-11-14（开关并入档位批 · 用户裁定）：不再有独立的「开/关」下拉 —— 「Off」本身就是模型能力表里的
+  //   **一个档位**（用户原话：「图片的 off 不就是关闭吗」）⇒ 档位下拉直接列出 efforts 全量（含 Off）。
+  //   ⚠ 单一事实源不变：关闭状态仍 = entry 里**没有 reasoning 字段**（F7 语义），不是 { enabled:false }。
+  //   ⚠ 'off' 作为 effort 值出现在存量配置里时（旧版曾写 enabled:true, effort:'off'）同样按关闭呈现——
+  //     否则会渲染出一个「开着但档位是 Off」的自相矛盾态。
+  const OFF_EFFORT = 'off';
+  const storedEffort = entry.reasoning && typeof entry.reasoning.effort === 'string' ? entry.reasoning.effort : '';
+  const effortOn = !!(entry.reasoning && entry.reasoning.enabled) && storedEffort !== OFF_EFFORT;
   const levelOptions = reasoning ? reasoning.efforts.map((e) => React.createElement('option', { key: e.id, value: e.id }, e.name)) : [];
-  const levelValue = effortOn ? entry.reasoning.effort : (reasoning ? (reasoning.defaultEffort || reasoning.efforts[0].id) : '');
+  // 关闭态回落到「Off」档位；能力表若没有 off 条目（个别模型）则回落到 defaultEffort / 首个档位
+  const offFallback = reasoning && reasoning.efforts.some((e) => String(e.id) === OFF_EFFORT)
+    ? OFF_EFFORT
+    : (reasoning ? String(reasoning.defaultEffort || (reasoning.efforts[0] && reasoning.efforts[0].id) || '') : '');
+  const levelValue = effortOn ? storedEffort : offFallback;
 
   // v22（C4）/v23：按厂家区分——厂家下拉选项 = providers；模型下拉 = 当前厂家模型 + 该厂家自定义候选
   const currentProvider = providers && providers.find((p) => p.provider === entry.provider);
@@ -94,28 +105,21 @@ function FallbackRow(props) {
       onChange: (e) => onChange({ ...entry, model: e.target.value }),
       children: modelOptions.map((m) => React.createElement('option', { key: m.id, value: m.id }, m.name || m.id)),
     }),
+    // 2026-11-14（开关并入档位批）：**一个**下拉承载完整状态 —— 档位列表里的 Off 即「关闭」。
+    //   选 Off ⇒ 删除 reasoning 字段（F7 语义不变，host 零改动）；选其它档 ⇒ { enabled:true, effort }。
+    //   ⚠ title 沿用原「思考开关」提示键（selThinking），文案值未改。
     reasoning
-      ? React.createElement(React.Fragment, null,
-          React.createElement(MarqueeSelect, {
-            className: 'dsh-plg-select dsh-plg-select-thinking',
-            // 2026-08-18（用户需求）：思考开关 hover 提示（简要介绍）
-            title: t('selThinking'),
-            value: effortOn ? 'on' : 'off',
-            onChange: (e) => {
-              const next = e.target.value === 'on';
-              if (next) onChange({ ...entry, reasoning: { enabled: true, effort: (reasoning.defaultEffort || (reasoning.efforts[0] && reasoning.efforts[0].id) || '') } });
-              else { const fix = { ...entry }; delete fix.reasoning; onChange(fix); } // F7：关闭思考不再写 {enabled:false} 冗余
-            },
-            children: [React.createElement('option', { key: 'off', value: 'off' }, t('cfgReasoningOff')), React.createElement('option', { key: 'on', value: 'on' }, t('cfgReasoningOn'))],
-          }),
-          React.createElement(MarqueeSelect, {
-            className: 'dsh-plg-select dsh-plg-select-level',
-            value: levelValue,
-            disabled: !effortOn,
-            onChange: (e) => onChange({ ...entry, reasoning: { enabled: true, effort: e.target.value } }),
-            children: levelOptions,
-          }),
-        )
+      ? React.createElement(MarqueeSelect, {
+          className: 'dsh-plg-select dsh-plg-select-reason',
+          title: t('selThinking'),
+          value: levelValue,
+          onChange: (e) => {
+            const next = e.target.value;
+            if (next === OFF_EFFORT) { const fix = { ...entry }; delete fix.reasoning; onChange(fix); }
+            else onChange({ ...entry, reasoning: { enabled: true, effort: next } });
+          },
+          children: levelOptions,
+        })
       : null,
     // v23（D4）：测试触发图标（结果由父级集中显示）
     React.createElement('button', {

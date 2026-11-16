@@ -90,7 +90,10 @@ const CSS = [
   // v2.8.4（下拉箭头占位预算）：所有下拉框右侧预留 28px 箭头位；固定宽度窄下拉同步加宽，保持原内容宽度不变
   // 2026-10-17（挤压根治）：同上，flex:1 改为 flex:1 1 0。
   // 2026-10-17（挤压根治 · 下限）：min-width 由 0 改为 96px（下拉内容可省略号，宽度须可用）。
-  '.dsh-plg-select{flex:1 1 0;min-width:96px;background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;padding:5px 28px 5px 12px}',
+  // 2026-11-14（模型行统一批）：字段类控件统一高度 —— 下拉与输入框同高 32px（边框 1px + 圆角 8px 不变）。
+  //   病历：下拉 32 / 图标按钮 22 / 底部按钮 34 三套高度并存（用户截图实测 40·27·43 @125%）。
+  //   ⚠ 只加 height + box-sizing，⛔ 不动 padding/字号/颜色 —— 垂直居中的视觉重量不变。
+  '.dsh-plg-select{flex:1 1 0;min-width:96px;box-sizing:border-box;height:32px;background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;padding:5px 28px 5px 12px}',
   'select.dsh-plg-select{-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%2212%22%20height=%2212%22%20viewBox=%220%200%2012%2012%22%3E%3Ctext%20x=%220%22%20y=%2210%22%20font-size=%2211%22%20fill=%22%238a8a8a%22%3E%E2%96%BE%3C/text%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}',
   '.dsh-plg-select:focus-visible{outline:none;border-color:var(--dsw-alias-brand-primary)}',
   // v2.8.4（下拉选项溢出动效）：闭合态与打开态悬停选项超长时均自动滚动
@@ -125,6 +128,13 @@ const CSS = [
   '.dsh-plg-switch{flex-wrap:wrap;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 10px;background:var(--dsw-alias-bg-layer-2)}',
   '.dsh-plg-switch-target{color:var(--dsw-alias-brand-primary);font-size:12px;line-height:16px;font-weight:600}',
   '.dsh-plg-btn{background:transparent;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;padding:5px 14px;cursor:pointer}',
+  // 2026-11-14（模型行统一批）：模型链底部按钮的**定宽变体**（用户裁定：与厂家下拉长宽视觉一致）。
+  //   病历：基线 .dsh-plg-btn 是 padding 自适应（实测 96.6 / 80.0 两宽、高 30~34 随字形浮动）⇒ 与下拉不成列。
+  //   ⛔ 不改基类：语音页/参数页共 6 处在用（窄行里定宽会把它们挤坏）。
+  //   ⚠ 100px = 行宽 534 反推的上限内、且 EN「Restore defaults」94.7px 放得下的最小取值。
+  //   ⚠ padding:0 —— 有 padding 时内容区只剩 82px，EN「Restore defaults」94.7px 会被省略号截断；
+  //     居中由 inline-flex 的 justify-content:center 承担（不依赖 padding）。
+  '.dsh-plg-btn-cell{box-sizing:border-box;width:100px;min-width:100px;height:32px;padding:0;display:inline-flex;align-items:center;justify-content:center;gap:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
   '.dsh-plg-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
   '.dsh-plg-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-label-dimmed)}',
   '.dsh-plg-btn:disabled{opacity:.4;cursor:default}',
@@ -183,9 +193,14 @@ const CSS = [
   //   与同行 label 文本长度无关（实测：EN 下 label 变长曾把输入框从 273px 压到 131.39px）。
   // 2026-10-17（挤压根治 · 下限）：min-width 由 0 改为 120px —— 输入框有**与文案无关的下限**，
   //   文案再长也只压缩同行文本，不会把输入框压到不可用（配合 flex:1 1 0）。
-  '.dsh-plg-input{flex:1 1 0;min-width:120px;background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;padding:5px 12px}',
+  '.dsh-plg-input{flex:1 1 0;min-width:120px;box-sizing:border-box;height:32px;background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;padding:5px 12px}',
   '.dsh-plg-input:focus-visible{outline:none;border-color:var(--dsw-alias-brand-primary)}',
-  '.dsh-plg-btn-icononly{min-width:22px;padding:2px 4px;font-size:12px;line-height:16px}',
+  // 2026-11-14（模型行统一批）：图标按钮 22×20 ⇒ 26×32 —— 与下拉同高（同一条 32px 高度线），
+  //   宽度由「图标 13px + 左右各 6px」反推（不写 padding 让内容居中，避免再被字形撑高）。
+  //   ⚠ 只模型行用这套：语音词典/测试区的图标按钮受 .dsh-plg-btn-icononly 基类影响，同步变高属预期（同为 32 线）。
+  //   ⚠ 宽度保持 22（与改前同）——26 会让失效行总宽 533（距真机 534 仅 1px，字体回退即溢出）；
+  //     22 ⇒ 525，余 9px 安全，且底部按钮内容区回到 98px，EN「Restore defaults」94.7px 放得下。
+  '.dsh-plg-btn-icononly{min-width:22px;box-sizing:border-box;height:32px;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:16px}',
   '.dsh-plg-inherit{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:16px}',
   // v22（C5）：行内测试连通性小图标（与整体一致：无背景 + token 边框/圆角 + hover 反馈）
   '.dsh-plg-testicon{min-width:22px;padding:2px 4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}',
@@ -195,7 +210,11 @@ const CSS = [
   '.dsh-plg-num{width:18px;text-align:right;flex:none}',
   // 2026-10-18（模型行超限批）：厂家选择器让出 24px（104 ⇒ 80）：它取自 providers 表，无数字约束，
   //   且玩家名有 title 可看全（见 fallback-row 的 title 承载，本轮已核实仍在）。
-  '.dsh-plg-select-provider{flex:0 1 136px;min-width:80px;max-width:176px}',
+  // 2026-11-14（模型行统一批 · 根因）：可收缩（flex:0 1 136px）是「同一个下拉在不同行/不同窗口宽度不同」的成因
+  //   —— 实测同一份 CSS：正常行 111 / 带 ⚠ 的失效行 92.2 / 用户截图 107。
+  //   ⇒ 改为**定宽 100px 不收缩**；宽度不再随文案与兄弟项浮动（用户要求「边框宽窄在视觉上一致」）。
+  //   ⚠ 100 的两个边界：行宽 534 下不溢出（失效行 523 ≤ 534）、EN「Restore defaults」94.7 ≤ 100−2−8 内容区。
+  '.dsh-plg-select-provider{flex:0 0 100px;width:100px;min-width:100px}',
   // ⚠ 2026-10-18（模型行超限批 · 可辨识尾部）：模型名选择器 = 行内**唯一的弹性项** ⇒ 溢出时它先让出。
   //   但「让出」不等于「让到看不清」：真机 534px 实测模型名可用宽度 = 选择器宽 − padding 40px；
   //   95px 只够画 5 个字（实测 vis=78 / need=116，用户看到的正是「eek-v4-flash」这种缺头的残串）。
@@ -207,8 +226,12 @@ const CSS = [
   ,'.dsh-plg-mselect.dsh-plg-ms-fill{flex:1 1 auto;width:auto}'
   ,'.dsh-plg-mselect.dsh-plg-ms-content{flex:0 0 auto;width:auto}'
   ,'.dsh-plg-mselect.dsh-plg-ms-fill .dsh-plg-mselect-trigger{width:100%}',
-  // 2026-10-18（模型行超限批）：思考等级 72 ⇒ 62（实测内容「低/Low」≈26px；仍留 36px 余量给 Medium/High）。
-  '.dsh-plg-select-level{flex:0 0 auto;width:62px;min-width:62px}',
+  // 2026-11-14（模型行统一批 · 开关并入档位）：合并后的**唯一**思考控件列 ——
+  //   选项 = 模型能力表的全部档位（含 Off，用户原话「图片的 off 不就是关闭吗」），
+  //   与厂家列同宽 100px ⇒ 红框左右等宽（用户裁定「视觉样式一致」）。
+  //   ⚠ 原 .dsh-plg-select-level（62px）已随合并**删除**（无组件引用 = 孤儿类，dead-code gate 会判）。
+  //   ⚠ 与 .dsh-plg-select-thinking 并存：参数页「记忆功能」开关仍用那个类（56px），⛔ 不得删。
+  '.dsh-plg-select-reason{flex:0 0 100px;width:100px;min-width:100px}',
   // v23.1（D4）：测试结果集中单点区（链列表下方、操作按钮上方；空态隐藏）
   // v3.1.5（双模式参考）：纵向布局——头部行独占一行，实测/历史结果逐行显示，字号与标题对齐（12px）。
   // v3.1.8（布局）：✓ 可用/✗ 失败状态移入头部行（与「测试 #N」同行）；标题靠左、✕ 靠右。
@@ -393,7 +416,13 @@ const CSS = [
   '.va-item > .va-dict-in{flex:1 1 0;min-width:0;padding:4px 9px;font-size:13px}',
   '.va-arrow{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px}',
   '.va-hits{flex:none;width:26px;text-align:right;font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
-  '.va-mv{flex:none;width:24px;min-width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;padding:0;font-size:11px;line-height:1;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}',
+  // 2026-11-15（方案 A）：移组按钮 24×24/圆角 6 ⇒ **24×32/圆角 8** —— 与旁边 22×32/圆角 8 的删除按钮同高同圆角。
+  //   病历（真机实测）：同一行里 ⊘ 比 ✕ 矮 8px、圆角小 2px，看着像两个不同控件的拼凑。
+  '.va-mv{flex:none;width:24px;min-width:24px;height:32px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding:0;font-size:11px;line-height:1;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}',
+  // 2026-11-15（方案 A）：词典「新增行」的隐形占位 —— 宽度对齐移组按钮（24px），
+  //   高度取 32 与输入框同线；border 透明只为参与盒模型（不引入可见边框）。
+  //   ⛔ 不是按钮：不响应点击、不进 tab 序（节点上已 aria-hidden）。
+  '.va-mv-ph{flex:none;width:24px;min-width:24px;height:32px;box-sizing:border-box;border:1px solid transparent;border-radius:8px}',
   '.va-mv:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
   '.va-mv:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
   '.va-emp{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);padding:6px 2px}',

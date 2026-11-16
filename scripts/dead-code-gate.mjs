@@ -14,9 +14,41 @@ import * as libManifest from './lib/lib-manifest.mjs';
 import { codeOnly } from './lib/code-only.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 installCrashGuard('dead-code');
+
+// ⚠⚠ PE-01 修复（2026-11-17 · 全功能审查 blocker）：**门禁墙钟被被测代码的定时器绑架**。
+//   病历：本环 R7 用 `new Function('window', client.cjs)` 求值产物，该产物内部会起 18 个
+//     2000ms 重试定时器（源头 `src/client/common/state.cjs` 的 HOST_SYNC_RETRY_MS 与
+//     `src/client/domains/voice/state.cjs` 的重试链）。node 必须等事件循环清空才退出 ⇒
+//     **真活 2.4s 的环被拖成 20.6s**，且与机器快慢无关（定时器到期是墙钟）。
+//   后果链：gate-exit 内 spawn 本环 7 次 ⇒ 下限 126s > CI 的 60s/文件顶 ⇒ **CI 恒红**。
+//   修法（A/B 实测 20151ms → 2108ms，R1–R7 摘要逐字不变）：在**模块级、永久**把 setTimeout
+//     返回的句柄 unref。⛔ 不能只包在 factory 调用那几行 —— 重试链在 factory 返回后才起，
+//     作用域收窄就漏（实测 20.3s 无改善）。
+//   ⛔ 不改产品侧（state.cjs / voice/state.cjs）：浏览器里 setTimeout 返回 number 且无 unref，
+//     为门禁改产品是方向错误，且要重建产物。
+(function unrefTimersForGate() {
+  if (typeof globalThis.setTimeout !== 'function') return;
+  const original = globalThis.setTimeout;
+  if (original.__gateUnrefWrapped === true) return;
+  const wrapped = function (...a) {
+    const handle = original.apply(this, a);
+    if (handle && typeof handle.unref === 'function') { try { handle.unref(); } catch (e) { /* 非 Timer 句柄 */ } }
+    return handle;
+  };
+  wrapped.__gateUnrefWrapped = true;
+  globalThis.setTimeout = wrapped;
+})();
+
 const ROOT = path.join(__dirname, '..');
 const args = process.argv.slice(2);
-const RANGE = args.includes('--range') ? args[args.indexOf('--range') + 1] : 'HEAD~1..HEAD';
+// ⚠⚠ PE-03 修复（2026-11-17 · 全功能审查 high）：**默认范围看不见未提交改动**。
+//   病历：原默认 `HEAD~1..HEAD` ⇒ R1 只判「上一次提交新增了什么」，而开发中（未 commit）的
+//     新增声明**完全不可见**。实测：本工作区 `git diff HEAD -- src/` 有 7 条新增声明，
+//     R1 只报 2 条 ⇒ 「R1–R7 全过」不能支撑任何关于当前工作区的结论。
+//   修法：默认改为 `HEAD`（= 工作区 vs HEAD，含未提交改动），与 CI 语义一致（CI 里 HEAD 即
+//     检出点，读数不变）。仍可用 `--range A..B` 显式指定历史区间。
+//   ⚠ 不动 `RANGE === 'HEAD'` 的分支写法：`git diff --unified=0 HEAD` 正是「工作区 vs HEAD」。
+const RANGE = args.includes('--range') ? args[args.indexOf('--range') + 1] : 'HEAD';
 const ALLOW = new Set((args.includes('--allow') ? args[args.indexOf('--allow') + 1] : '').split(',').filter(Boolean));
 let failures = 0;
 const fail = (r, m) => { failures++; console.log('FAIL | ' + r + ' | ' + m); };
@@ -162,6 +194,10 @@ for (const line of git(diffArgs).split('\n')) {
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, ent.name);
       if (ent.isDirectory()) { collect(full); continue; }
+      // ⚠ PE-02 复核订正（2026-11-17 · 队长自查）：**扩展名不扩到 .cjs**。
+      //   本环判的是**字符串 chunk**（`module.exports = "…"` 包裹），.cjs 是普通 CommonJS 模块，
+      //   没有该包裹形态；扩进来只会得到 30 条「读不出 chunk 导出契约」的假红（已实测）。
+      //   真实覆盖缺口（client 死码 / 孤儿类 / 死导出无判据）登记为遗留项 PE-38，需另立新环。
       if (!ent.name.endsWith('.js')) continue;
       if (full.split(path.sep).includes('vendor')) continue;
       const raw = fs.readFileSync(full, 'utf8');
@@ -199,7 +235,16 @@ for (const line of git(diffArgs).split('\n')) {
     }
   }
   // ⚠ 只在**无契约违反**时才打 PASS 行 —— 否则同规则双行（FAIL+PASS）会成为假读数源。
-  if (!bad && !contractBad) pass('R2', scanned + ' 个 client chunk 无未声明标识符');
+  // ⚠⚠ PE-02 复核订正（2026-11-17 · 队长自查，推翻初判）：**本环不修零扫描，只修措辞**。
+  //   初判「R2 收 .js 而源码是 .cjs ⇒ 零扫描假绿」——**前提错**：R2 判的是**字符串 chunk**
+  //   （`module.exports = "…"` 包裹形态，见上方 collect 的 `mm` 解析），而目标模式下该形态
+  //   **本就应为 0 件**（源码已由 module-bundler 从单一入口装配）。
+  //   实测反证：① 把 .cjs 塞进收集器 ⇒ 30 个普通模块全被判「读不出 chunk 导出契约」= 假红；
+  //     ② 加「零扫描即 FAIL」⇒ gate 恒红（0 件是本模式的**正确**读数，不是缺读数）。
+  //   ⇒ 真正的缺陷是**PASS 行措辞**让人把「该形态不存在」读成「检查通过」（已改）。
+  //   ⇒ 真实的覆盖缺口是「client 死码 / 孤儿类 / 死导出整类无判据」（PE-38），需**另立新环**，
+  //     不在本批范围；已登记为遗留项，不得用改本环的方式冒充已修。
+  if (!bad && !contractBad) pass('R2', scanned + ' 个字符串形态 client chunk 无未声明标识符（目标模式下应为 0 件，非覆盖判据）');
 }
 // ---- R3 产物清单 ↔ files 白名单一致（P1a 2026-09-19：幽灵声明是静默面）----
 // 背景：`package.json.files` 里的条目若磁盘不存在，`npm pack` **不报错、静默跳过**；
@@ -467,6 +512,13 @@ for (const line of git(diffArgs).split('\n')) {
     for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, ent.name);
       if (ent.isDirectory()) { if (ent.name !== 'vendor') walkClientChunks(full); continue; }
+      // ⚠ PE-02 复核订正（2026-11-17 · 队长自查）：**本行不修**。
+      //   初判「R7 同 R2 零扫描」不成立 —— R7 判的是**字符串 chunk**（`module.exports = "…"` 形态），
+      //   而目标模式下该形态**本就应为 0 件**（源码已由 module-bundler 从单一入口装配，
+      //   见本段头注「client/host 均已无字符串 chunk」）。
+      //   实测反证：把 `.cjs` 塞进本收集器后，30 个普通模块全被判「导出形态违反：实得 object」
+      //   ⇒ 那不是修缺陷，是制造 61 处假红。**真正的缺陷是 PASS 行的措辞**（下方已改）。
+      //   真实的覆盖缺口（client 死码/孤儿类/死导出无判据）见 PE-38，需另立环，不在本批。
       if (ent.name.endsWith('.js')) clientChunks.push(full);
     }
   };
@@ -519,7 +571,10 @@ for (const line of git(diffArgs).split('\n')) {
     }
   }
   for (const p of problems) fail('R7', p);
-  if (!problems.length) pass('R7', totalChunks + ' 个 client chunk 导出形态均为 string｜client/host 单一入口装配图可构建｜lib/client.cjs factory PARSE OK｜plugin-host.js 求值 PARSE OK（污染 0 处）');
+  // ⚠ PE-02 复核订正（2026-11-17）：原 PASS 行写「0 个 client chunk 导出形态均为 string」——
+  //   「0 个」与「均为 string」并置会被读成「检查通过」，实际是**该形态在本模式下不存在**（预期为 0）。
+  //   读数措辞改为**如实声明判据面**：明确写出「本环不判 client 死码/孤儿类/死导出」。
+  if (!problems.length) pass('R7', totalChunks + ' 个字符串形态 client chunk（目标模式下应为 0 件，非覆盖判据）｜client/host 单一入口装配图可构建｜lib/client.cjs factory PARSE OK｜plugin-host.js 求值 PARSE OK（污染 0 处）');
 }
 
 console.log(failures ? ('\n✗ 门禁未通过（' + failures + ' 处）') : '\n✅ 死代码门禁通过');

@@ -99,6 +99,17 @@ function matchVoiceHotkey(e, hk) {
   return hk && e.ctrlKey === hk.ctrl && e.altKey === hk.alt && e.shiftKey === hk.shift && e.metaKey === hk.meta && e.code === hk.code;
 }
 
+// ⚠⚠ PE-16 修复（2026-11-17 · 全功能审查 high）：**keyup 不得逐位比修饰键**。
+//   病历：keyup 复用 matchVoiceHotkey ⇒ 用户「先松 Ctrl/Shift、再松主键」时，
+//     keyup 事件里 ctrlKey/shiftKey 已为 false ⇒ 与 hk.ctrl/hk.shift 不等 ⇒ **pressEnd 不被调用**
+//     ⇒ 录音卡在 recording，必须手动再点一次才能停。这是日常松键顺序，不是边角。
+//   修法：keyup 只认**主键 code**（松开的就是那个键）。修饰位在 keydown 时已判过；
+//     按住期间松开修饰键本身不改变「用户正在松开主键」这一事实。
+//   ⛔ 不反向放宽 keydown：keydown 仍必须逐位相等（否则 Alt+` 会与 ` 混同）。
+function matchHotkeyKeyUp(e, hk) {
+  return hk && e.code === hk.code;
+}
+
 // ── 接线组件：无 UI（只取本会话 input/inputActions 并挂热键监听）───────────────
 function VoiceHotkeyHost(props) {
   const useInputHook = typeof props.useInput === 'function' ? props.useInput : null;
@@ -475,7 +486,8 @@ function VoiceHotkeyHost(props) {
     };
     const onKeyUp = (e) => {
       if (typeof window !== 'undefined' && window.__voiceHotkeyCapturing) return;
-      if (!matchVoiceHotkey(e, hk)) return;
+      // PE-16（2026-11-17）：keyup 只认主键 code（先松修饰键时逐位比较会丢停止信号）。
+      if (!matchHotkeyKeyUp(e, hk)) return;
       e.preventDefault(); e.stopPropagation();
       pressEnd();
     };

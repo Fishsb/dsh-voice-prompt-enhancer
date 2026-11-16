@@ -101,10 +101,28 @@ test('RPCG-05 registerRpcRoute 端到端冒烟：跨站 403 / 同源放行分发
   await captured.handler(mkReq({ host: '127.0.0.1:3080' }, '{"method":"no/such-method"}'), res);
   assert.equal(res.code, 404, '本机无来源头调用照常放行');
   // ④ 超大体积 → 413
-  res = mkRes();
-  await captured.handler(mkReq({ host: '127.0.0.1:3080' }, 'x'.repeat(1024 * 1024 + 16)), res);
-  assert.equal(res.code, 413, '超 1MiB 必须 413');
-  assert.match(res.body, /BODY_TOO_LARGE/);
+  // ⚠ PE-05/G1 修复（2026-11-17 · 全功能审查）：原断言是**假绿** —— `mkReq` 里
+  //   `r.destroy = () => {}` 是空函数，而旧实现先 destroy 再写响应，真实 socket 下
+  //   客户端只看到 0 字节 / ECONNRESET（实测 1,050,045B → ECONNRESET），契约码根本到不了。
+  //   现改为**真 socket 级断言**：起一个真 HTTP 服务挂 handler，用真 http.request 打超限体，
+  //   断言客户端真的收到 413 + BODY_TOO_LARGE。
+  {
+    const http = require('node:http');
+    const server = http.createServer((req, rsp) => { captured.handler(req, rsp); });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const got = await new Promise((resolve) => {
+      const body = 'x'.repeat(1024 * 1024 + 16);
+      const rq = http.request({ host: '127.0.0.1', port, path: '/dsh-voice-prompt-enhancer/rpc', method: 'POST', headers: { 'content-type': 'text/plain', 'content-length': Buffer.byteLength(body) } }, (r) => {
+        let d = ''; r.on('data', (c) => { d += c; }); r.on('end', () => resolve({ status: r.statusCode, body: d }));
+      });
+      rq.on('error', (e) => resolve({ error: e.code || e.message }));
+      rq.write(body); rq.end();
+    });
+    server.close();
+    assert.equal(got.status, 413, '真 socket：超 1MiB 必须收到 413（不得 ECONNRESET / 0 字节）');
+    assert.match(String(got.body), /BODY_TOO_LARGE/, '真 socket：响应体必须含 BODY_TOO_LARGE');
+  }
   // ⑤ 非 POST → 405（原有契约不被破坏）
   res = mkRes();
   const getReq = new EventEmitter();

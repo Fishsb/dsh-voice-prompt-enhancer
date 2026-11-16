@@ -65,16 +65,96 @@ const CHUNKS = [
   'src/client/common/styles.cjs',
 ];
 
-function readChunk(rel) {
+// ⚠⚠ PE-04 修复（2026-11-17 · 全功能审查 high）：**装置 32/32 场景红**（`module is not defined`）。
+//   病历：`src/shared/contracts/voice-config.cjs` 是**纯转发壳**——
+//     `module.exports = require('../../../lib/voice-config.cjs');`
+//   而下方两条正则只处理 `module.exports = { … };` 形态（对象字面量）⇒ 转发行原样留在源码里 ⇒
+//   注入浏览器 `new Function(...)` 后求值时 `module` 未定义 ⇒ **全部 32 个场景抛错**。
+//   （这也解释了为什么该装置从未接入 gate：它一接线就是红的。）
+//   修法：**跟随转发**——遇到 `module.exports = require('<rel>')` 就读被转发文件，
+//     这样既保留「单一事实源」（实现仍在 lib/），又不把 CommonJS 语法带进浏览器。
+const REEXPORT_RE = /^\s*module\.exports\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)\s*;?\s*$/m;
+
+function readChunk(rel, depth) {
+  const depthNow = depth || 0;
   if (rel.endsWith('.cjs')) {
     const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    return raw
-      .replace(/^'use strict';\s*/, '')
-      .replace(/\nmodule\.exports\s*=\s*\{[\s\S]*?\};\s*$/, '');
+    // 纯转发壳：跟随到被转发文件（防环：最多 5 层）
+    const m = raw.match(REEXPORT_RE);
+    if (m && depthNow < 5) {
+      const target = path.relative(ROOT, path.resolve(path.dirname(path.join(ROOT, rel)), m[1]));
+      return readChunk(target.split(path.sep).join('/'), depthNow + 1);
+    }
+    // ⚠ PE-04 修复之三（2026-11-17）：**此处不再剥 `module.exports`**。
+    //   剥除必须发生在 inlineRequires 里（那里才知道「外层 chunk 要剥、内联依赖要转成 return」）。
+    //   在这里剥会连带剥掉被内联依赖的导出清单 ⇒ 依赖变成空对象 ⇒ 下游 `JSON.parse(undefined)`。
+    return raw.replace(/^'use strict';\s*/, '');
   }
   // ⚠ decodeChunk(file, opts) 的第二参是 { root }（不是裸路径）。传裸路径会**静默**回落到本仓根
   //   —— 那样 --root 失效，变异/负控会量到错的树（本席实测踩到过：M 系列曾量到工作树）。
   return decodeChunk(rel, { root: ROOT });
+}
+
+// ⚠⚠ PE-04 修复之二（2026-11-17）：**把 chunk 间的 require 就地内联**。
+//   病历：上述转发壳修好后，下一次报错变成 `require is not defined` —— 因为 client chunk
+//     之间的 `require('./constants.cjs')` / `require('../../shared/contracts/rpc.cjs')` 在浏览器
+//     `new Function` 作用域里没有模块系统（这正是 ADR-230 的载体约束，产物由 bundler 内联）。
+//   修法：本装置**自己做一次最小内联**——按 CHUNKS 清单把 `require('<rel>')` 换成被依赖 chunk
+//     的源码 + 一个同名绑定。规则窄、可预期：只认 `const { a, b } = require('x')` /
+//     `const a = require('x')` 两种形态，其余保留（会在求值时显式报错，不会静默）。
+const CHUNK_SET = new Set(CHUNKS);
+function resolveChunkRel(fromRel, reqPath) {
+  const resolved = path.relative(ROOT, path.resolve(path.dirname(path.join(ROOT, fromRel)), reqPath));
+  return resolved.split(path.sep).join('/');
+}
+
+/**
+ * 去掉模块源码尾部的导出语句，返回 { body, exportList }。
+ * 支持两种形态（本仓都有）：
+ *   ① `module.exports = { a, b, c };`   → exportList = 'a, b, c'
+ *   ② `module.exports = ident;`        → exportList = '...ident'（转发壳，如 contracts）
+ * ⚠ 形态 ② 必须支持：`src/shared/contracts/rpc.cjs` 就是 `const contracts = require(...); module.exports = contracts;`，
+ *   漏掉它会让内联体里残留 `module.` ⇒ 浏览器 `module is not defined`（实测踩到）。
+ */
+function splitExports(src) {
+  const obj = src.match(/\nmodule\.exports\s*=\s*\{([\s\S]*?)\};\s*$/);
+  if (obj) return { body: src.slice(0, obj.index), exportList: obj[1] };
+  const ident = src.match(/\nmodule\.exports\s*=\s*([A-Za-z_$][\w$]*)\s*;\s*$/);
+  if (ident) return { body: src.slice(0, ident.index), exportList: '...' + ident[1] };
+  return { body: src, exportList: '' };
+}
+
+function inlineRequires(rel, relCache) {
+  // 外层 chunk：剥掉尾部导出块（浏览器里没有 module），但保留其它内容。
+  const raw = splitExports(readChunk(rel)).body;
+  const visit = (src, selfRel, depth) => {
+    if (depth > 5) return src;
+    // ⚠ 必须支持**多行解构**（`const {` / 若干行 / `} = require('x');`）——
+    //   本仓 helpers.cjs 就是这种形态，只写单行 `[^}]*` 会漏掉它（实测漏 3 处）。
+    return src.replace(/^([ \t]*)(const|let|var)\s+(\{[\s\S]*?\}|[A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)\s*;?/gm,
+      (whole, indent, kw, lhs, reqPath) => {
+        const target = resolveChunkRel(selfRel, reqPath);
+        // 依赖可以**不在 CHUNKS 清单里**（如 shared/contracts/*.cjs）—— 只要磁盘上有就内联。
+        // 找不到 ⇒ 保留原样（求值时显式报错，不静默）。
+        if (!fs.existsSync(path.join(ROOT, target))) return whole;
+        const key = target;
+        if (!relCache.has(key)) relCache.set(key, visit(readChunk(target), target, depth + 1));
+        // 依赖 body 尾部的导出清单 —— 内联时改成 return 该对象（走同一 splitExports，两种形态都认）。
+        // ⚠ 这里**不再出现 module.exports**：浏览器 new Function 作用域里没有 module。
+        const split = splitExports(relCache.get(key));
+        const expList = split.exportList;
+        const bodyNoExp = split.body;
+        // ⚠ 绑定一律用 **var**（不是原样的 const/let）：驱动会把多个 chunk 拼进**同一个**
+        //   new Function 体（如 model-main-section + fallback-row 都 require RPC_METHODS），
+        //   而 `const` 重复声明是 SyntaxError（实测：Identifier 'RPC_METHODS' has already been declared）。
+        //   `var` 允许重复声明，语义等价（都是函数级绑定），不改变任何行为。
+        const bind = lhs.trim().startsWith('{')
+          ? indent + 'var ' + lhs + ' = (function () { ' + bodyNoExp + '\n; return { ' + lhs.replace(/^\{|\}$/g, '') + ' }; })();'
+          : indent + 'var ' + lhs + ' = (function () { ' + bodyNoExp + '\n; return { ' + expList + ' }; })();';
+        return bind;
+      });
+  };
+  return visit(raw, rel, 0);
 }
 
 // ⭐ 2026-10-18（R2 · 装置缺陷修复）：本装置此前**只注入插件 CSS、不注入宿主 token**，
@@ -133,7 +213,8 @@ const REALISTIC_MAX = {
   voiceCorrectionSkipped: '因开关关闭跳过', voiceCorrectionFailed: '纠错失败（LAST_CODE_LONG ×99）',
   voiceSectionTitle: '🎙 语音识别',
   secMain: '模型配置', secFallbackCount: '99 模型 · 按序尝试', secFallbackEmpty: '暂无模型（使用内置链）',
-  cfgAddFallback: '＋ 添加模型', cfgRestoreDefaults: '恢复默认', cfgRemoveInvalid: '清理失效条目',
+  // 2026-11-15：文案随产品同步（加号改 SVG 图标、第三个按钮缩短为「移除失效」）
+  cfgAddFallback: '添加模型', cfgRestoreDefaults: '恢复默认', cfgRemoveInvalid: '移除失效',
   cfgChainHasInvalid: '模型链中存在失效条目（模型/提供方已不可用），建议清理',
   cfgRestoreNote: '「恢复默认」将模型链重置为官方默认模型（自定义模型会被替换）',
   cfgReasoningWarn: '⚠ 高推理强度会极大增加优化所需时间（思考模式耗时可数倍于普通模式），请按需选择强度。',
@@ -246,11 +327,16 @@ function scenarios() {
 const PROBE_KEYS = ['rows', 'cards', 'chips', 'slider', 'controls'];
 
 // 语音块六个必需探针（语音/诊断场景共用）：语音块必须真的被测到
-const VOICE_BLOCK = { rows: 9, cards: 2, chips: 3, slider: 1, controls: 9 };
-// 模型行场景：只声明模型行面（cards 仍为 2 —— 语音卡也在 models tab 内；⛔ 不断言 chips/slider）
-const MODEL_ROW = { rows: 9, cards: 2, controls: 9 };
+// ⚠ PE-04 配套（2026-11-17 · 实测校准）：原下限 `{ rows:9, cards:2, chips:3, slider:1, controls:9 }`
+//   描述的是 **2026-11-13 之前的语音块**（独立开关 chip + 静音滑块）。该批把开关并入下拉、
+//   滑块退役后，实测 voice-all-on 场景为 `{ rows:5, cards:2, chips:0, slider:0, controls:12, selects:4 }`
+//   ⇒ 拿旧下限判会 32 场景全红（不是产品回归，是**装置下限过期**）。
+//   现按当前形态校准，并保留 `chips`/`slider` 为**读数**（不作下限）：它们已无对应控件。
+const VOICE_BLOCK = { rows: 5, cards: 2, controls: 10, selects: 4 };
+// 模型行场景：只声明模型行面（cards 仍为 2 —— 语音卡也在 models tab 内；⛔ 不断言 selects）
+const MODEL_ROW = { rows: 5, cards: 2, controls: 10 };
 // 参数 tab 场景：没有语音块（显式 0）
-const PARAMS_TAB = { rows: 9, cards: 0, chips: 0, slider: 0, controls: 10 };
+const PARAMS_TAB = { rows: 5, cards: 0, controls: 10 };
 
 const PROBE_MINS = (() => {
   const m = {};
@@ -328,7 +414,10 @@ function nativePath(browser, p) {
 
 function buildPage() {
   const chunks = {};
-  for (const rel of CHUNKS) chunks[rel] = readChunk(rel);
+  // PE-04（2026-11-17）：用 inlineRequires 而不是裸 readChunk —— 依赖必须先内联，
+  //   否则浏览器里 `require is not defined`（详见 inlineRequires 头注）。
+  const cache = new Map();
+  for (const rel of CHUNKS) chunks[rel] = inlineRequires(rel, cache);
   // styles 模块正文是 JS（const CSS = [...].join('\n')）——必须**求值**才拿到 CSS 文本，
   // 不能把 JS 源码直接塞进 <style>（那样一条样式都不生效，量到的是浏览器默认盒 = 假绿）。
   const cssSrc = chunks['src/client/common/styles.cjs'];

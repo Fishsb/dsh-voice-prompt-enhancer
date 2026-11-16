@@ -798,12 +798,30 @@ function ovbStartVad(getAmp, onSilence) {
       // ⇒ 判据改为：**上界只在「窗口里确有低于上界的样本」时才启用**；
       //   否则说明该下限与本机实际电平脱节（测时更安静 / 换了设备 / 环境变吵），
       //   此时**整层不钳制**（target 取分位本身 q），退回改前行为 —— 宁可少救不可救坏。
-      let observed = Infinity;
+      // ⚠⚠ PE-14 修复（2026-11-17 · 全功能审查 high）：**下限不得取「窗口最小值」**。
+      //   病历：原实现取 `min{ x : x < ceiling }` ⇒ **单帧低谷就能把噪底钉死**。
+      //     实测（真实桥模块 + 合成幅度；环境 0.005 / 说话 0.03 / 判停需 20 帧）：
+      //       无低谷帧 → floor=5.0e-3、quiet=20/20、判停=true；
+      //       插入 **1 帧 0.0004** → floor=4.0e-4、thrOff=6.0e-4、quiet=0/20、判停=**false**；
+      //       插入 1 帧 0（analyser 未就绪时官方 amplitude 返回 0）→ floor=3.05e-5、判停=false。
+      //     后果：噪底低于真实环境 ⇒ 开阈也低于环境 ⇒ 环境帧全判「有声」⇒ **说完不自停**。
+      //   修法：改用**低分位**（p10）而不是最小值 —— 单个离群低谷无法拉低分位数，
+      //     而「真实环境确实很低」时 p10 仍会跟着降（自愈能力保留）。
+      //     ⚠ 不改成「连续 N 帧才采纳」：那会给噪底引入 N 帧的响应延迟，测噪期更久；
+      //       分位数在统计上已经等效地抵抗孤立离群点。
+      const below = [];
       for (let i = 0; i < quietWindow.length; i++) {
         const x = quietWindow[i];
-        if (x < ceiling && x < observed) observed = x;
+        if (x < ceiling) below.push(x);
       }
-      // observed 有值 ⇒ 环境候选确实低于上界 ⇒ 可安全钳到 observed（它本身就是观测到的环境）。
+      let observed = Infinity;
+      if (below.length > 0) {
+        below.sort((a, b) => a - b);
+        // p10 下界（至少取 1 个）：len=1 时退化为该值（无法抗离群，但也没有第二点可用）
+        const idx = Math.min(below.length - 1, Math.max(0, Math.floor(below.length * 0.10)));
+        observed = below[idx];
+      }
+      // observed 有值 ⇒ 环境候选确实低于上界 ⇒ 可安全钳到 observed（低分位，抗单帧离群）。
       // observed 无值 ⇒ 上界与实况脱节 ⇒ 不钳制（noiseFloor = q，分位自愈接管）。
       const target = Number.isFinite(observed) ? observed : q;
       noiseFloor = (q < target) ? q : target;
@@ -1089,7 +1107,16 @@ function ovbWatchActivity() {
     //   ② **调用先到、相位后到**（实测：callCount 在相位出现时就已是 1）⇒ 上升沿快照把 delta 记成 0，
     //      收口时判「没调用过」= 真命中被误报为 missed。
     // 用「上次收口以来的计数窗口」则与相位/调用的先后顺序无关：本次会话期间只要发生过调用，窗口必变。
-    if (now === (b.callCountAtPrevSessionEnd || 0)) {
+    // ⚠⚠ PE-28 修复（2026-11-17 · 全功能审查 medium）：**VAD 关闭时不得计 missed**。
+    //   病历：VAD 关闭分支（下方以 `ovbVadEnabled()` 为条件的那段）**提前 return**，
+    //   ⛔ 注释里**不得**再出现那个判据的源码字面量：变异自证用例按字符串替换该判据，
+    //     注释先命中就会被替换掉 ⇒ 变异落到注释上 ⇒ 判据失去牙（本批实测踩到）。
+    //     从不进入会话收口 ⇒ `callCount` 恒 0 ⇒ `now === callCountAtPrevSessionEnd` 恒成立 ⇒
+    //     **每场录音 sessionsMissed +1**。诊断区把「静音监测已关闭」误报成
+    //     「没看到录音过程，自动停止没生效」（用户实测：VAD 关一场 → sessionsMissed=1、callCount=0）。
+    //   修法：关闭态**不计 missed** —— 没开的功能谈不上「没生效」。
+    //     ⚠ 仍推进 `callCountAtPrevSessionEnd`，避免重新打开后第一场被误计。
+    if (ovbVadEnabled() && now === (b.callCountAtPrevSessionEnd || 0)) {
       b.sessionsMissed++;
       b.lastMissedAt = Date.now();
     }
@@ -1262,7 +1289,20 @@ function installOfficialVoiceBridge() {
       //   captured BEFORE the session becomes visible — clearing here would throw that reference
       //   away and the A2 fallback stop would then report no-stop-button-and-no-recorder
       //   (measured). The reference is already cleared on recorder stop and on uninstall.
-      if (!ovbVadEnabled()) { b.vadSkipped = (b.vadSkipped || 0) + 1; ovbNotify(); return; }
+      // ⚠⚠ PE-29 修复（2026-11-17 · 全功能审查 medium）：**vadSkipped 只在会话开始时计一次**。
+      //   病历：本分支在 `live && recordingPhase && !vadSessionActive` 条件下自增，而 `vadSessionActive`
+      //     **从不置真**（VAD 关闭时直接 return）⇒ 每次轮询都重新进入 ⇒ 一场录音 + 30 次 DOM 变动
+      //     实测 vadSkipped=31（语义应为「1 次会话被跳过」）。
+      //   修法：用一个会话级标记去重（关闭态下也置真，下次 live 变 false 时复位）。
+      if (!ovbVadEnabled()) {
+        if (!b._vadSkipCountedForSession) {
+          b._vadSkipCountedForSession = true;
+          b.vadSkipped = (b.vadSkipped || 0) + 1;
+          ovbNotify();
+        }
+        return;
+      }
+      b._vadSkipCountedForSession = false;
       vadSessionActive = true;
       const rec = res.recording;
       const getAmp = () => (typeof rec.amplitude === 'function' ? rec.amplitude() : 0);

@@ -38,8 +38,15 @@ test('CI18N-02 ZH/EN 顶层键集完全相等且保持 317 键', () => {
   //   voiceDictTipShort / voiceDictInUseHint / voiceDictEmptyDisabled /
   //   voiceDictMoveOut / voiceDictMoveIn / voiceDictDisabledHint（学习词典改双集合）/
   //   voiceAllOff（三项处理全关时的摘要态）；中英各加 13，两侧仍相等）。
-  assert.equal(zhKeys.length, 332);
-  assert.equal(enKeys.length, 332);
+  // 2026-11-17（PE-30 修复 · 全功能审查）：332 → **333**（+1 键，可归因：
+  //   `errVoiceOfficialUnavailable` —— 热键启动失败此前回落到 `errUNKNOWN`（「优化失败」），
+  //   真实原因不可见；中英各加 1，两侧仍相等）。
+  // 2026-11-17（PE-32 修复）：333 → **340**（+7 键：voiceStateOnSuffix / voiceDictCountPrefix /
+  //   voiceAgoJustNow / voiceAgoMinutes / voiceAgoHours / voiceAgoDays / voiceAgoSuffix ——
+  //   EN 界面曾泄漏「已开启」「 条 · 」「N 天前」；中英各加 7，两侧仍相等）。
+  // +1（PE-32 续）：`cfgTestLabelPrefix`（「测试 #」/`Test #`）。
+  assert.equal(zhKeys.length, 341);
+  assert.equal(enKeys.length, 341);
   assert.deepEqual(zhKeys, enKeys);
 });
 

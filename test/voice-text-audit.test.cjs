@@ -112,7 +112,8 @@ test('VTX-F 失败态带时距（三态：刚失败 / 很久以前 / 之后成�
   const src = vs();
   assert.ok(src.includes('function ovbSinceLabel'), '须有把失败时刻折算成时距的纯函数');
   assert.ok(src.includes("t('voiceOfficialFeedbackSeenAgo')"), '失败文案须用带时距的键');
-  assert.ok(src.includes("ovbSinceLabel(snap.lastSessionFailedAt)"), '时距须取自桥暴露的失败时刻');
+  // PE-32（2026-11-17）：ovbSinceLabel 现接受 (at, t) —— 时距文案走 i18n（EN 界面曾泄漏「N 天前」）。
+  assert.ok(/ovbSinceLabel\(snap\.lastSessionFailedAt,\s*t\)/.test(src), '时距须取自桥暴露的失败时刻，且文案走 i18n（t 透传）');
   assert.ok(src.includes("t('voiceOfficialFeedbackSeen')"), '取不到时刻时须退化为不带时距的失败文案（不得渲染残句）');
   assert.ok(src.includes('lastSessionFailed === true'), '判据仍是会话级 lastSessionFailed（不是页面累计）');
   // 原始时刻进 title
@@ -120,7 +121,9 @@ test('VTX-F 失败态带时距（三态：刚失败 / 很久以前 / 之后成�
   // 时距函数本身：三档语义
   const start = src.indexOf('function ovbSinceLabel');
   const body = src.slice(start, src.indexOf('function OfficialVoiceDiag'));
-  assert.ok(body.includes("'刚刚'"), '刚失败 ⇒ 报「刚刚」');
+  // PE-32：中文字面量下沉到 i18n 键的**缺省回退**里（无 t 时仍返回「刚刚」）。
+  assert.ok(body.includes("'刚刚'"), '刚失败 ⇒ 报「刚刚」（无 t 时的缺省回退）');
+  assert.ok(body.includes("voiceAgoJustNow"), '时距文案须走 i18n 键 voiceAgoJustNow');
   assert.ok(/Math\.floor\(h \/ 24\)/.test(body), '很久以前 ⇒ 折算成「天」');
   assert.ok(/return ''/.test(body), '无时刻 ⇒ 返回空串（由调用方退化）');
 });

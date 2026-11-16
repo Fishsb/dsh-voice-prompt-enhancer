@@ -415,6 +415,12 @@ function browserDriver() {
       cards: geom.cards.length,
       chips: (geom.chips || []).length,
       slider: geom.slider ? 1 : 0,
+      // ⚠ PE-04 配套（2026-11-17）：`chips` / `slider` 是 **2026-11-13 之前的语音块形态**
+      //   （独立 ToggleChip 按钮 + 静音滑块）。该批把开关并入下拉、滑块退役 ⇒ 这两个探针
+      //   在当前 UI 下**恒为 0**，拿它们当下限会让 32 个场景全红（实测 chips=0 / slider=0）。
+      //   新增 `selects`：语音块的四个「关 + 档位」合一下拉（自动增强/语音纠错/清口水词/静音监测），
+      //   是当前形态里**最能代表「语音块真的渲染了」**的控件族。旧探针保留为读数（不作下限）。
+      selects: [].slice.call(root.querySelectorAll('select.dsh-plg-select')).length,
       // ⚠ 必须从 out.rows 取（那才是带 controls 的记账行）；rows 是 DOM 节点、没有 controls 字段。
       controls: out.rows.reduce(function (n, r) { return n + r.controls.length; }, 0),
     };

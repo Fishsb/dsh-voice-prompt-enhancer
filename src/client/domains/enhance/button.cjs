@@ -159,14 +159,17 @@ function EnhanceButton(props) {
     return () => { disposed = true; disposer(); };
   }, [phase, sessionId, s ? s.seq : 0]);
 
-  if (!inputActions || sessionId === undefined) return null;
-
-  let onClick;
-  let disabled = false;
-  let title;
-  let cls = 'dsh-enh-btn';
+  // ⚠⚠ PE-17 修复（2026-11-17 · 全功能审查 · 终裁 low，但零成本消除陷阱）：
+  //   **条件 return 必须晚于全部 hooks**。原实现 `if (!inputActions || sessionId === undefined)
+  //   return null;` 写在 4 个 hooks（useState/useRef/两个 useEffect）之前 —— 同一实例若在
+  //   生命周期内出现「先无 sessionId、后补上」，React 会抛
+  //   `Rendered more hooks than during the previous render`（16 → 20）。
+  //   可达性：官方槽位 `conversation.input.right` 声明为 `scope: "session"` 且宿主在
+  //     `renderSlot` 前有 `input === void 0 || sessionId === void 0 ? null :` 守卫
+  //     （dsh-client-ui-conversation/lib/client.js:22110 / :22982-22985），renderer 对严格
+  //     session 槽 fail-closed 抛 SlotAssemblyError ⇒ **现行宿主不可达**（故定 low，非 high）。
+  //   但保留陷阱没有收益：hooks 与依赖它们的派生值一并上移，语义逐字不变。
   const corrTakesOver = corrRunning && !enhanceBusy;
-  if (corrTakesOver) { cls = 'dsh-enh-btn dsh-enh-btn-busy dsh-enh-btn-text'; }
   const corrTicket = (corrSnap && typeof correctionFailureTicket === 'function')
     ? String(correctionFailureTicket(corrSnap, sessionId) || '')
     : '';
@@ -203,6 +206,15 @@ function EnhanceButton(props) {
     setFlash(false);
     clearFlashTimer();
   }, [corrPhase, enhanceBusy, sessionId]);
+
+  // ⚠ hooks 全部就位之后才允许早退（PE-17）。
+  if (!inputActions || sessionId === undefined) return null;
+
+  let onClick;
+  let disabled = false;
+  let title;
+  let cls = 'dsh-enh-btn';
+  if (corrTakesOver) { cls = 'dsh-enh-btn dsh-enh-btn-busy dsh-enh-btn-text'; }
   if (flash && !corrTakesOver) {
     var flashView = (HAS_CORRECTION && typeof correctionPhaseView === 'function') ? correctionPhaseView(CORRECTION_PHASES.FAILED) : null;
     cls = 'dsh-enh-btn ' + (flashView && flashView.cls ? flashView.cls : 'dsh-enh-btn-text');

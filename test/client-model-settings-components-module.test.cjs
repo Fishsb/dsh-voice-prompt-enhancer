@@ -118,8 +118,11 @@ test('CMSC-03 FallbackRow 保留 provider/model/reasoning/testing 接线', () =>
     path.join(REPO_ROOT, 'src/client/domains/settings/fallback-row.cjs'),
     'utf8',
   );
-  assert.ok(source.includes("className: 'dsh-plg-select dsh-plg-select-thinking'"));
-  assert.ok(source.includes("className: 'dsh-plg-select dsh-plg-select-level'"));
+  // 2026-11-14（开关并入档位批）：原 thinking + level 两个下拉合并为一个 reason 档位下拉 ——
+  //   「Off」是模型能力表里的一个档位，不再是独立开关（用户裁定）。
+  assert.ok(source.includes("className: 'dsh-plg-select dsh-plg-select-reason'"));
+  assert.equal(source.includes('dsh-plg-select-thinking'), false, '⛔ 模型行不得再渲染思考开关（已并入档位）');
+  assert.equal(source.includes('dsh-plg-select-level'), false, '⛔ 模型行不得再渲染旧档位下拉（已合并为 reason）');
 });
 
 test('CMSC-04 ModelMainSection 保留默认链、单点测试状态与折叠区块', () => {
@@ -149,8 +152,14 @@ test('CMSC-04 ModelMainSection 保留默认链、单点测试状态与折叠区�
   // CollapsibleSection 收到的是 createElement 的位置参数 children。
   const sectionBody = tree.children[0];
   assert.ok(sectionBody, '前置：折叠区块须携带正文');
+  // 2026-11-15（用户确认）：底部三个按钮统一挂 dsh-plg-btn-cell（100×32，与厂家下拉同宽）。
   const restoreButton = sectionBody.children.find((child) =>
     child && child.props && child.props.className === 'dsh-plg-row');
+  assert.equal(
+    restoreButton.children.filter((c) => c && c.props && /dsh-plg-btn-cell/.test(c.props.className || '')).length,
+    2,
+    '前置：默认两个按钮都须挂 dsh-plg-btn-cell（100×32 定宽变体）',
+  );
   const restore = restoreButton.children.find((child) =>
     child && child.children && child.children[0] === 'cfgRestoreDefaults');
   restore.props.onClick();

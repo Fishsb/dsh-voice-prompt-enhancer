@@ -32,7 +32,8 @@ test('CH-01 枚举面与 R7 自报读数同值（跨实现交叉校验，不是�
   // 此时仍执行下面的对拍，证明「0」是实际枚举结果，而不是扫描器坏掉。
   // 与既有门禁**对拍**：R7 的自报行里那个数字是它自己枚出来的面。两侧不一致 ⇒ 有一侧漏了。
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'dead-code-gate.mjs')], { cwd: ROOT, encoding: 'utf8' });
-  const m = String(r.stdout || '').match(/R7 \| (\d+) 个 client chunk/);
+  // PE-02 复核订正（2026-11-17）：R7 自报措辞改为「N 个字符串形态 client chunk」，正则同步。
+  const m = String(r.stdout || '').match(/R7 \| (\d+) 个字符串形态 client chunk/);
   assert.ok(m, 'R7 自报行必须可读（读不到 ⇒ 本交叉校验无被测物，不得静默跳过）：' + String(r.stdout || '').slice(0, 200));
   assert.equal(String(CHUNKS.length), m[1],
     'listChunkFiles 与 R7 枚举面必须逐数同值（两侧各自实现 ⇒ 借此互相咬住）');

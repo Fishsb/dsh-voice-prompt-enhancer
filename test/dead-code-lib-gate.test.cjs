@@ -606,7 +606,9 @@ test('R7 零 chunk 负控：合法空 chunk 面仍判绿（0 件不是扫描器�
   withFixture(null, (dir) => {
     const r = runGate(dir);
     assert.equal(r.code, 0, '零 chunk 且装配图完整必须 exit 0');
-    assert.match(r.out, /PASS \| R7 \| 0 个 client chunk/, 'R7 必须显式报 0 件（不是缺席）');
+    // PE-02 复核订正（2026-11-17）：R7 的 PASS 措辞改为如实声明判据面
+    //（「字符串形态 chunk 在目标模式下应为 0 件，非覆盖判据」），断言随之收紧到新措辞。
+    assert.match(r.out, /PASS \| R7 \| 0 个字符串形态 client chunk/, 'R7 必须显式报 0 件（不是缺席）');
   });
 });
 
