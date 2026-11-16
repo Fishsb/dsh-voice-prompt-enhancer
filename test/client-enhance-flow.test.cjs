@@ -172,3 +172,29 @@ test('ENH-FLOW wiring: helpers 完成分支三路持久化调用齐备', () => {
     assert.ok(h.includes(marker), 'helpers 缺持久化接线标记: ' + marker);
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PE-05-G6 补齐（2026-11-17 · 全功能审查）：**hook 序断言**
+// ═══════════════════════════════════════════════════════════════════════════
+// 病历：`button.cjs` 曾有 4 个 hooks 写在 `if (!inputActions || sessionId === undefined) return null;`
+//   **之后** ⇒ 同一实例若出现「先无 sessionId、后补上」，React 抛
+//   `Rendered more hooks than during the previous render`（16 → 20）。
+//   全仓**无任何 hook 序断言**（`grep -rn "Rendered more hooks" test/` 为空）⇒ 该类回归无牙。
+// 判据：组件体内**最后一个 hook 调用行号**必须早于**第一个条件 return 行号**。
+//   ⚠ 这是静态可判的形态判据（不依赖真机 props 迁移时机），回归时立即红。
+test('PE05-HOOK-ORDER button.cjs：所有 hooks 必须早于任何条件 return', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'src/client/domains/enhance/button.cjs'), 'utf8');
+  const lines = src.split('\n');
+  let lastHook = -1;
+  let firstCondReturn = -1;
+  lines.forEach((line, i) => {
+    const ln = i + 1;
+    if (/React\.(useState|useRef|useEffect|useMemo|useCallback|useLayoutEffect)\s*\(/.test(line)) lastHook = ln;
+    if (firstCondReturn === -1 && /^\s*if \(.*\) return null;/.test(line)) firstCondReturn = ln;
+  });
+  assert.ok(lastHook > 0, '必须能定位到 hooks（找不到 ⇒ 判据无被测物，不得静默跳过）');
+  assert.ok(firstCondReturn > 0, '必须能定位到条件 return null');
+  assert.ok(lastHook < firstCondReturn,
+    'hook 序违反：最后一个 hook 在 ' + lastHook + ' 行，条件 return 在 ' + firstCondReturn + ' 行 ⇒ 同一实例会抛 Rendered more hooks');
+});
+

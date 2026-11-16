@@ -45,9 +45,12 @@ test('CI18N-02 ZH/EN 顶层键集完全相等且保持 341 键', () => {
   // 2026-11-17（PE-32 修复）：333 → **340**（+7 键：voiceStateOnSuffix / voiceDictCountPrefix /
   //   voiceAgoJustNow / voiceAgoMinutes / voiceAgoHours / voiceAgoDays / voiceAgoSuffix ——
   //   EN 界面曾泄漏「已开启」「 条 · 」「N 天前」；中英各加 7，两侧仍相等）。
-  // +1（PE-32 续）：`cfgTestLabelPrefix`（「测试 #」/`Test #`）。
-  assert.equal(zhKeys.length, 341);
-  assert.equal(enKeys.length, 341);
+  // 2026-11-17（PE-38 清理 · 全功能审查）：341 → **292**（-49 键，逐族可归因：
+  //   `upd*` 30 / `env*` 18 / `pluginsSwitch` 1 —— updater 子系统与插件版本切换 UI 已整体退役，
+  //   运行时消费面（src/client + lib/client.cjs）实测**零引用**、且无 `'upd'+` / `'env'+` 动态拼接）。
+  //   ⚠ 保留 `stage*` 17 键：它们由 `button.cjs:231/237` **动态拼接**消费，静态扫描会误判。
+  assert.equal(zhKeys.length, 292);
+  assert.equal(enKeys.length, 292);
   assert.deepEqual(zhKeys, enKeys);
 });
 

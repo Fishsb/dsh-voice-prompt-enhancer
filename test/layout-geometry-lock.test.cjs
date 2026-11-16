@@ -822,3 +822,31 @@ test('GEOLOCK-B-V 变异自证：provider 下限回 104 ⇒ B2/B3 必红（锁 B
   assert.ok(current.fixedSum + current.modelFloor <= MODEL_ROW_AVAILABLE_PX,
     '负控：当前树 ' + (current.fixedSum + current.modelFloor) + ' <= ' + MODEL_ROW_AVAILABLE_PX);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PE-05-G6 补齐之二（2026-11-17 · 全功能审查）：**height 断言**
+// ═══════════════════════════════════════════════════════════════════════════
+// 病历：`grep -c height test/layout-geometry-lock.test.cjs` = **0** ⇒ 本文件此前只锁宽度，
+//   而「三套高度归一 32px」（2026-11-14 批的核心改动）**零断言**。任何人把 height 改回
+//   40/27/43，本锁全绿。
+// 判据：逐个组件类断言其 CSS 声明里有 `height:32px`（或声明的目标值）+ `box-sizing:border-box`
+//   （后者是「32 真的是外框高」的前提，缺了它会随 padding 变大）。
+//   ⚠ 只判**声明值**（成因面），不判运行期像素——后者归 settings-layout-audit。
+test('PE05-HEIGHT 三套高度归一：下拉/输入/单元格/图标按钮均声明 height:32px + border-box', () => {
+  const { stylesBody } = require('./helpers/client-styles.cjs');
+  const css = stylesBody();
+  const must32 = ['.dsh-plg-select', '.dsh-plg-input', '.dsh-plg-btn-cell', '.dsh-plg-btn-icononly'];
+  for (const cls of must32) {
+    const re = new RegExp('\\' + cls + '\\s*\\{[^}]*\\}');
+    const m = css.match(re);
+    assert.ok(m, cls + ' 必须有 CSS 声明块（找不到 ⇒ 判据无被测物，不得静默跳过）');
+    assert.match(m[0], /height:\s*32px/, cls + ' 必须声明 height:32px（三套高度归一的核心）');
+    assert.match(m[0], /box-sizing:\s*border-box/, cls + ' 必须声明 box-sizing:border-box（否则 32 不是外框高）');
+  }
+  // 负控：确认判据有牙 —— 若把某个类的高度改成别的值，上面的正则必须不再命中
+  const mutated = css.replace(/(\.dsh-plg-select\s*\{[^}]*?)height:\s*32px/, '$1height:40px');
+  assert.notEqual(mutated, css, '变异必须真的改到 CSS（否则本判据的自证无效）');
+  const mSel = mutated.match(/\.dsh-plg-select\s*\{[^}]*\}/);
+  assert.ok(!/height:\s*32px/.test(mSel[0]), '变异后该类的 height:32px 必须不再命中（判据有牙）');
+});
+

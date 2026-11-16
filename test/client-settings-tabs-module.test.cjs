@@ -183,3 +183,35 @@ test('CSTAB-05 构建产物内联两个 tab 运行时，旧 chunk 与相对 requ
   assert.equal(client.includes('src/client/components/params-tab.js'), false);
   assert.equal((client.match(/require\(["']\.\.?\//g) || []).length, 0);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PE-05-G6 补齐之三（2026-11-17 · 全功能审查）：**tab 键盘断言**
+// ═══════════════════════════════════════════════════════════════════════════
+// 病历：`grep -rn "ArrowRight" test/` 为空 ⇒ 两个 tab 的键盘导航（Arrow 轮转 / Home / End /
+//   preventDefault / 焦点跟随 / roving tabIndex）**零断言**。该行为当前是正确的（真机已验），
+//   但任何人改坏都不会被 npm test 抓到。
+// 判据：源码结构面断言五件事（静态可判，不依赖浏览器）：
+//   ① 四类键都被处理；② 轮转用取模（不是夹取，否则首尾不回绕）；
+//   ③ 有 preventDefault（否则方向键同时滚动页面）；④ setTab 用 nextIndex 取到键名；
+//   ⑤ 焦点跟随（nextTab.focus()）；⑥ roving tabIndex（选中 0 / 其余 -1）。
+test('PE05-TABKEY 两 tab 键盘导航：轮转/Home/End/preventDefault/焦点跟随/roving tabIndex 全部在位', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'src/client/domains/settings/plugins-section.cjs'), 'utf8');
+  // ① 四类键
+  for (const k of ["'ArrowRight'", "'ArrowLeft'", "'Home'", "'End'"]) {
+    assert.ok(src.includes('case ' + k), '必须处理 ' + k + '（键盘导航契约）');
+  }
+  // ② 轮转必须用取模（夹取会让首尾不回绕）
+  assert.match(src, /ArrowRight':\s*nextIndex\s*=\s*\(index \+ 1\)\s*%\s*tabs\.length/, 'ArrowRight 必须取模轮转');
+  assert.match(src, /ArrowLeft':\s*nextIndex\s*=\s*\(index - 1 \+ tabs\.length\)\s*%\s*tabs\.length/, 'ArrowLeft 必须取模轮转');
+  // ③ preventDefault
+  assert.match(src, /event\.preventDefault\(\)/, '必须 preventDefault（否则方向键同时滚动页面）');
+  // ④ setTab 用 nextIndex
+  assert.match(src, /setTab\(tabs\[nextIndex\]\[0\]\)/, '必须切到 nextIndex 对应的 tab 键');
+  // ⑤ 焦点跟随
+  assert.match(src, /nextTab\.focus\(\)/, '必须把焦点移到新 tab（键盘用户不然会丢焦点）');
+  // ⑥ roving tabIndex
+  assert.match(src, /tabIndex:\s*tab === entry\[0\] \? 0 : -1/, '必须 roving tabIndex（选中 0 / 其余 -1）');
+});
+
