@@ -340,17 +340,35 @@ function DictionaryEditor(props) {
     setDraft(null);
     commit(next);
   };
-  const patchAt = (i, patch) => {
-    // 编辑期：只更新草稿，**不写配置、不归一**（PE-20）
+  // ⚠⚠ PE-20 补修之一（2026-11-17 · 本轮体检 F04-1，**blocker 级**）：
+  //   **只有文本输入才延迟提交，开关类动作必须立即提交**。
+  //   病历：PE-20 首版把 `patchAt` 统一改成「只置草稿、不 commit」，而「移组 ⊘/↩」按钮
+  //     也走 `patchAt`（原实现是立即 commit 的）⇒ **点击完全没有反应**（saveVoiceCfg 调用 0 次）。
+  //     这是用户每天都会点的按钮，属功能不可用。
+  //   修法：拆成两个入口 ——
+  //     · `patchDraftAt`：文本输入用，只改草稿（PE-20 的本意：输入中途不归一、不丢条）
+  //     · `toggleAt`：移组/启用类动作，**立即 commit**（它们是「一次点击 = 一个决定」）
+  // ⚠⚠ PE-20 补修之二（F04-2）：**结构变更必须清掉编辑态**。
+  //   病历：`editing` 存的是**行号**，而 `removeAt` 用 filter 删行 ⇒ 后续行索引整体前移 ⇒
+  //     失焦提交会把草稿写进**邻行**并覆盖该行（实测 [甲,乙,丙,丁] → 删甲后提交丙的草稿 → [乙,丙,丙X]，丁丢失）。
+  //   修法：任何结构变更（删行 / 新增行）前先把编辑态结算或丢弃，杜绝用陈旧索引提交。
+  const patchDraftAt = (i, patch) => {
     if (editing === i && draft) { setDraft(Object.assign({}, draft, patch)); return; }
     setEditing(i);
     setDraft(Object.assign({}, entries[i] || {}, patch));
   };
-  const removeAt = (i) => { commit(entries.filter((e, k) => k !== i)); };
+  const discardEdit = () => { setEditing(null); setDraft(null); };
+  const toggleAt = (i, patch) => {
+    discardEdit();  // F04-2：先结算编辑态，避免索引陈旧
+    const next = entries.map((e, k) => (k === i ? Object.assign({}, e, patch) : e));
+    commit(next);   // F04-1：立即落配置（不是草稿）
+  };
+  const removeAt = (i) => { discardEdit(); commit(entries.filter((e, k) => k !== i)); };
   const addOne = () => {
     const from = String(buf.from || '').trim();
     const to = String(buf.to || '').trim();
     if (!from || !to) return;                         // 两侧都要有；不静默造空条目
+    discardEdit();  // F04-2：新增行会改变索引，先结算编辑态
     commit(entries.concat([{ from: from, to: to, hits: 0, at: Date.now(), enabled: true }]));
     setBuf({ from: '', to: '' });
   };
@@ -376,13 +394,14 @@ function DictionaryEditor(props) {
     return React.createElement('div', {
       className: 'va-item', key: 'dict-' + i + '-' + (disabled ? 'off' : 'on'),
     },
-    termInput(shown.from, (x) => patchAt(i, { from: x }), t('voiceDictFrom'), commitEdit),
+    termInput(shown.from, (x) => patchDraftAt(i, { from: x }), t('voiceDictFrom'), commitEdit),
     React.createElement('span', { className: 'va-arrow', 'aria-hidden': 'true' }, '→'),
-    termInput(shown.to, (x) => patchAt(i, { to: x }), t('voiceDictTo'), commitEdit),
+    termInput(shown.to, (x) => patchDraftAt(i, { to: x }), t('voiceDictTo'), commitEdit),
     React.createElement('span', { className: 'va-hits', title: t('voiceDictHits') }, String(e.hits || 0)),
+    // ⚠ F04-1（2026-11-17）：移组是「一次点击 = 一个决定」⇒ 走 toggleAt **立即落配置**。
     disabled
-      ? moveBtn(t('voiceDictMoveIn') + ' · ' + t('voiceDictToggleHint'), '↩', () => patchAt(i, { enabled: true }))
-      : moveBtn(t('voiceDictMoveOut') + ' · ' + t('voiceDictToggleHint'), '⊘', () => patchAt(i, { enabled: false })),
+      ? moveBtn(t('voiceDictMoveIn') + ' · ' + t('voiceDictToggleHint'), '↩', () => toggleAt(i, { enabled: true }))
+      : moveBtn(t('voiceDictMoveOut') + ' · ' + t('voiceDictToggleHint'), '⊘', () => toggleAt(i, { enabled: false })),
     delBtn(() => removeAt(i)),
     );
   };

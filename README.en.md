@@ -37,7 +37,6 @@ Restart DSH afterwards (also after updating or removing) — the ✨ button appe
   ⚠️ Long-press applies to the **plugin hotkey** only; the official button only responds to clicks (enable and record a hotkey in plugin settings first)
 - **Stop on silence** — auto-stop with a configurable 1-5 s silence window (default 2 s), can be turned off entirely
 - **Filler removal** — local rule-based cleanup of filler words / repeats / trailing isolated pauses; no rewriting, no additions (on by default)
-  (Note: the previous "drawn-out sounds" wording overstated it — there is no elongation-compression rule; corrected 2026-11-17)
 - **Transcript correction** — word-level fixes after transcription, voice path only (off by default)
 - **Auto-enhance** — trigger enhancement automatically once the transcript is in the draft (off by default)
 

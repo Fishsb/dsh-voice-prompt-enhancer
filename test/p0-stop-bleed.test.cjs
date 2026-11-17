@@ -355,7 +355,14 @@ test('P0-b 主超时计时器上移到准备阶段之前，且生成额度不被
   const iGen = BODY.indexOf('const genTimeoutMs = resolveEnhanceTimeoutMs(');
   const iPrep = BODY.indexOf('const prepareBudgetMs = resolvePrepareBudgetMs(');
   const iTotal = BODY.indexOf('const totalBudgetMs = genTimeoutMs > 0 ? genTimeoutMs + prepareBudgetMs : 0;');
-  const iTimer = BODY.indexOf('const timeoutDisposer = totalBudgetMs > 0 ? ctx.timer.timeout(');
+  // ⚠ 2026-11-17 体检订正：PE-25 串行化补修（F03-01）把计时器声明改成了「外层先 let、
+  //   赋值在临界区内」（为把整段准备包进 try/finally），因此锚点不能再死磕 `const `。
+  //   判据语义不变：**必须能定位到这一处赋值**，且它早于管线执行。
+  const iTimer = (function () {
+    const a = BODY.indexOf('const timeoutDisposer = totalBudgetMs > 0 ? ctx.timer.timeout(');
+    if (a > 0) return a;
+    return BODY.indexOf('timeoutDisposer = totalBudgetMs > 0 ? ctx.timer.timeout(');
+  })();
   // 目标模式：四个阶段由共享执行器按契约顺序统一运行（不再在 handler 里逐条写死）。
   // 本锁的核心语义不变：主超时计时器必须在**任何准备阶段之前**挂上。
   const iAnalyze = BODY.indexOf('await runEnhancePipeline(state);');

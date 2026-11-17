@@ -169,6 +169,24 @@ function createClientHelpers(deps) {
     }
   }
 
+  // ⚠⚠ PE-21 补修（2026-11-17 · 本轮体检 F05-1/F05-2，两条 medium）：
+  //   **「发送消息清空记忆链」必须同时清掉带外副本，否则清空会被卸载再挂载复活。**
+  //   病历：首版只在 releaseStoreIfIdle 里把 rounds 写进 memoryCarry、永不 delete；
+  //     而发送清空只置 `store.memoryRounds = []`（重建后的那个新数组）⇒
+  //     实测 A5：发送清空 → 卸载 → 再挂载 ⇒ 记忆链**又变回 1 轮**（期望 0）。
+  //   后果有两层：① 用户以为清空了，实际下一轮请求又把旧轮次发给 host；
+  //     ② memoryCarry 只增不减 ⇒ 长会话页面内存无上界（每会话最多 4 轮全文）。
+  //   修法：提供 clearMemoryChain(sessionId)，**同时**清 store 与 carry —— 单一入口，语义唯一。
+  function clearMemoryChain(sessionId) {
+    memoryCarry.delete(sessionId);
+    const session = sessionStores.get(sessionId);
+    if (session) {
+      session.memoryRounds = [];
+      session.memoryRoundPushed = false;
+      session.optimized = false;
+    }
+  }
+
   function safeSetDraft(inputActions, text) {
     if (!inputActions || typeof inputActions.setDraft !== 'function') return;
     try { inputActions.setDraft(text); } catch (error) { /* 输入框卸载竞态不阻断状态复位 */ }
@@ -223,6 +241,11 @@ function createClientHelpers(deps) {
       host.call(RPC_METHODS.CANCEL, { sessionId, seq: previousSeq }).catch(() => {});
     }
 
+    // ⚠⚠ PE-22 补修（2026-11-17 · 本轮体检 F05-3）：**标记必须在新一轮起点复位**。
+    //   病历：首版只在 push 处置 true、只在 undo pop 后置 false ⇒ 若用户「增强后改草稿（不走 undo）」
+    //     再关记忆增强一次，标记仍是 true ⇒ 点撤销会把**上一轮**的记忆弹掉（原缺陷在另一条路径复发）。
+    //   修法：每次 enhance 起点清零 —— 标记的语义是「**本轮**是否入队」，必须逐轮重置。
+    session.memoryRoundPushed = false;
     session.backup = draft;
     session.seq += 1;
     const seq = session.seq;
@@ -346,6 +369,7 @@ function createClientHelpers(deps) {
     clearResultStore,
     isEnhancing,
     releaseStoreIfIdle,
+    clearMemoryChain,
     safeSetDraft,
     cancelEnhance,
     splitCommand,

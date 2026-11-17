@@ -260,8 +260,16 @@ harness.handle(RPC_METHODS.ENHANCE, async (args) => {
   const prev = sessionChain.get(sessionId) || Promise.resolve();
   let releaseChain = null;
   sessionChain.set(sessionId, new Promise((resolve) => { releaseChain = resolve; }));
-  try { await prev; } catch (e) { /* 前一个失败不阻断后续 */ }
-  pending.set(key, rec);
+  // ⚠⚠ PE-25 补修（2026-11-17 · 本轮体检 F03-01，**high**）：**临界区必须整体在 try/finally 内**。
+  //   病历：首版把 `sessionChain.set`→`try {` 之间留成裸区（pending.set / 预算计算 / 超时计时器），
+  //     任一处抛错都会**跳过 finally 里的 releaseChain** ⇒ 该 session 的增强通道**永久死锁**
+  //     （实测 C1 抛错 → C2 永不 settle，且 pending 记录泄漏）。
+  //   修法：整段（排队后的全部准备 + 管线 + 收尾）包进同一个 try/finally，
+  //     与 PE-10 的临界区形态一致 —— **一个 session 的任何异常都不得让它自己锁死**。
+  let timeoutDisposer = null;
+  try {
+    try { await prev; } catch (e) { /* 前一个失败不阻断后续 */ }
+    pending.set(key, rec);
 
   // 请求状态经 Pipeline 五阶段链式传递（analyze→retrieve→assemble→llm→commit）。
   // P0-b（2026-10-12 · 超时预算错位修复；独立复核 high 修正）：主超时计时器上移到**任何阶段之前**——
@@ -290,7 +298,7 @@ harness.handle(RPC_METHODS.ENHANCE, async (args) => {
   state.prepareBudgetMs = prepareBudgetMs;
   state.budgetDeadline = totalBudgetMs > 0 ? Date.now() + totalBudgetMs : null;
   // v3.1.7（用户需求·超时无限制）：timeoutMs<=0 不挂超时计时器（0 = 无限制，等待模型自然完成）
-  const timeoutDisposer = totalBudgetMs > 0 ? ctx.timer.timeout(() => {
+  timeoutDisposer = totalBudgetMs > 0 ? ctx.timer.timeout(() => {
     markAndAbort(key, 'timedOut');
   }, totalBudgetMs) : null;
 
@@ -304,14 +312,17 @@ harness.handle(RPC_METHODS.ENHANCE, async (args) => {
   } catch (e) {
     herr('[enhance] unexpected error session=' + sessionId + ' seq=' + seq, e);
     return { ok: false, code: 'LLM_FAILED', message: friendlyMessage({ code: 'LLM_FAILED' }) };
+  }
   } finally {
+    // ⚠ F03-01（2026-11-17 · 本轮体检）：**收尾必须覆盖整个临界区**。
+    //   本 finally 对应的是「排队之后」的那个 try —— 它包住了 pending.set、全部预算计算、
+    //   超时计时器与管线执行。任何一处抛错都会走到这里，保证：
+    //     · 超时计时器被清（不漏挂）
+    //     · pending 记录被删（不泄漏；token 匹配才删，防误删后来者）
+    //     · **串行链被释放**（否则该 session 的增强通道永久死锁 —— 这正是首版的缺陷）
     if (timeoutDisposer) timeoutDisposer();
-    // PE-26（2026-11-17）：只在 token 匹配时删（同 key 的后来者不得被前者删掉）。
     const cur = pending.get(key);
     if (cur && cur.token === rec.token) pending.delete(key);
-    // PE-25（2026-11-17）：释放本 session 的串行链，让下一个请求开始。
-    //   ⚠ 不在 release 里删 sessionChain 条目：紧随其后的新请求可能已 set 了新 Promise，
-    //     删条目会把它一起丢掉（丢串行化）。Map 以 sessionId 为键，量级 = 会话数，可接受。
     if (typeof releaseChain === 'function') releaseChain();
   }
 });

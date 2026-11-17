@@ -36,7 +36,9 @@ function ModelMainSection(props) {
   // ⚠⚠ PE-23 修复（2026-11-17 · 全功能审查 medium）：**加上限**，与 sanitize 的 8 条对齐。
   //   病历：本处无上限，而两侧 sanitize（`state.cjs:32` 与 `pure.cjs:597`）硬截 8 条
   //     ⇒ 用户加第 9 条时界面短暂显示 9 条，**刷新后静默消失**（实测 9→8，无提示）。
-  //   修法：达到上限即不再添加（并让按钮 disabled，见下方 render）。
+  //   修法：达到上限即不再添加。⚠ 2026-11-17 体检订正：本注释原写「并让按钮 disabled，见下方 render」，
+  //   但 render 处**并没有** disabled 属性 ⇒ 点击第 9 条无任何反应也无提示。
+  //   现按实现如实描述；「按钮置灰 + 上限提示」登记为遗留 UX 项（不影响数据正确性）。
   const MODEL_CHAIN_MAX = 8;
   const addModel = () => {
     const next = fallback.slice();

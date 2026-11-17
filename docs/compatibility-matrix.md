@@ -98,7 +98,7 @@
 | `voice.autoEnhanceMode` | string | `''` | 自动增强使用的档位（空 = 跟随全局） |
 | `voice.correction.enabled` | boolean | `false` | 语音纠错开关 |
 | `voice.correction.windowRounds` | number | `1` | 纠错参考的最近 N 轮（1–3，非法回落 1） |
-| `voice.dictionary.entries` | array | `[]` | 学习词典 `[{from,to,hits,at,enabled}]`（≤20 条，词长 ≤10） |
+| `voice.dictionary.entries` | array | `[]` | 学习词典 `[{from,to,hits,at,enabled}]`（≤500 条，词长 ≤20）⚠ 2026-11-17 订正：原写「≤20 条，词长 ≤10」与 `lib/voice-config.cjs:72-73` 不符 |
 | `template.mode` | string | `builtin` | 模板模式（兼容保留；新 UI 以每模式 `pick` 为准） |
 | `template.texts` | object | 内置 | 每模式模板（兼容保留；有 `pick` 时不再参与解析） |
 | `template.pick` | object | 各模式 `default` | 每模式选中模板键：`default`（默认模板）/ `increment`（增量模板）/ `custom:<index>`（自定义列表条目）；非法/越界回退 `default`。旧内置键 `supplement` / `dev` 读取时迁为 `increment`（`plugin-host.js:1691`） |

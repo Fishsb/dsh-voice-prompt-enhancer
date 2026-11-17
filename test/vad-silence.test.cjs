@@ -589,20 +589,21 @@ test('VADSIL-V04 变异自证·负控必绿：同一变异下非法值回落判�
 //   环境帧全判「有声」⇒ quietFrames 永不增长 ⇒ **说完不自停**。
 // 修法：改取**低分位 p10**（孤立离群点拉不动分位数；真实安静环境仍会跟随下降）。
 // ⚠ 本锁直接对**算法本身**做数值断言（不依赖浏览器/麦克风），判别力二值确定。
+// 载入真实 official-bridge 模块（只为拿它的纯函数出口；不 install、不碰 DOM）。
+// 依赖全部给最小桩：ovbObservedFloor 不读取任何依赖，传空对象即可。
+function loadBridge() {
+  const mod = require('../src/client/domains/voice/official-bridge.cjs');
+  return mod.createOfficialVoiceBridge({});
+}
+
 test('VADSIL-PE14 噪底下限取低分位：单帧低谷不得把噪底钉死（真静环境仍跟随下降）', () => {
-  // 与 src/client/domains/voice/official-bridge.cjs 的 floorTrack 同一算法（纯数值，无 IO）
-  const floorOf = (window, ceiling, q) => {
-    const below = [];
-    for (const x of window) if (x < ceiling) below.push(x);
-    let observed = Infinity;
-    if (below.length > 0) {
-      below.sort((a, b) => a - b);
-      const idx = Math.min(below.length - 1, Math.max(0, Math.floor(below.length * 0.10)));
-      observed = below[idx];
-    }
-    const target = Number.isFinite(observed) ? observed : q;
-    return (q < target) ? q : target;
-  };
+  // ⚠⚠ 2026-11-17 本轮体检**修假锁**：本用例原先在测试内**重写了一份** floorOf 副本，
+  //   只运行副本 ⇒ 把生产的 p10 改回 min 也不会变红（regression-hunter 实测指出）。
+  //   现在改为调用**生产模块暴露的真实函数** `officialVoiceBridge.ovbObservedFloor`，
+  //   由 official-bridge.cjs 的 floorTrack 与测试**共用同一份实现**（单一事实源）。
+  const floorOf = loadBridge().ovbObservedFloor;
+  assert.equal(typeof floorOf, 'function',
+    '必须能取到生产实现 ovbObservedFloor（取不到 ⇒ 本锁又退回假锁，不得静默通过）');
   const N = 20, CEIL = 0.05, Q = 0.005;
   // ① 无低谷：噪底 = 环境
   const clean = new Array(N).fill(0.005);

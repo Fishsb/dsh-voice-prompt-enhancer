@@ -19,7 +19,12 @@ function CollapsibleSection(props) {
       className: 'dsh-cfg-sec-head',
       onClick: () => setOpen(!open),
       'aria-expanded': open,
-      'aria-controls': ids.body,
+      // ⚠⚠ F04-5 修复（2026-11-17 · 本轮体检 medium）：**aria-controls 只能指向存在的节点**。
+      //   病历：与 PE-33 完全同型 —— 原来恒设 aria-controls，而 body 只在 open 时渲染 ⇒
+      //     折叠态下该 id 在 DOM 里不存在（ARIA 1.2 要求引用目标存在；读屏器关系断裂）。
+      //   ⚠ 更糟的是既有测试把这个形态**反向固化**成断言（见 client-navigation-components-module.test.cjs），
+      //     本批一并订正那条断言（锁「展开时指向 body、折叠时不设」而不是锁死缺陷形态）。
+      ...(open ? { 'aria-controls': ids.body } : {}),
     },
       React.createElement('span', { className: 'dsh-cfg-chev' + (open ? ' dsh-cfg-chev-open' : '') }, '▸'),
       React.createElement('span', { className: 'dsh-cfg-sec-title' }, props.title),

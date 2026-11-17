@@ -12,6 +12,7 @@ function createEnhanceButton(deps) {
   const storeFor = d.storeFor;
   const notify = d.notify;
   const releaseStoreIfIdle = d.releaseStoreIfIdle;
+  const clearMemoryChain = d.clearMemoryChain;  // F05-1：记忆链清空（同时清带外副本）
   const setLastDraft = d.setLastDraft;
   const subscribeConfig = d.subscribeConfig;
   const subscribeCorrection = d.subscribeCorrection;
@@ -113,8 +114,11 @@ function EnhanceButton(props) {
     }
     if (sendSeenRef.current === true) {
       sendSeenRef.current = false;
-      if (s.memoryRounds.length > 0) {
-        s.memoryRounds = [];
+      // ⚠ F05-1（2026-11-17 · 本轮体检）：**清空必须走 clearMemoryChain**，
+      //   否则只清 store 里的数组、带外 memoryCarry 副本仍在 ⇒ 卸载再挂载后记忆链复活。
+      if (s.memoryRounds.length > 0 || typeof clearMemoryChain === 'function') {
+        if (typeof clearMemoryChain === 'function') clearMemoryChain(sessionId);
+        else s.memoryRounds = [];
         notify(sessionId);
       }
       clearSeen(sessionId);

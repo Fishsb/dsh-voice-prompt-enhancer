@@ -103,7 +103,7 @@ function createClientApp(deps) {
   const ModelPluginsSection = shell.ModelPluginsSection;
   const EnhanceButton = createEnhanceButton({
     React: d.React, makeT: helpers.makeT, dshEnhId: helpers.dshEnhId, subscribe: helpers.subscribe, storeFor: helpers.storeFor,
-    notify: helpers.notify, releaseStoreIfIdle: helpers.releaseStoreIfIdle, setLastDraft: configApi.setLastDraft,
+    notify: helpers.notify, releaseStoreIfIdle: helpers.releaseStoreIfIdle, clearMemoryChain: helpers.clearMemoryChain, setLastDraft: configApi.setLastDraft,
     subscribeConfig: configApi.subscribeConfig, subscribeCorrection: correction.subscribeCorrection,
     subscribeVoiceConfig: voiceApi.subscribeVoiceConfig, setActiveSession: helpers.setActiveSession,
     getActiveSession: helpers.getActiveSession, safeSetDraft: helpers.safeSetDraft, clearResultStore: helpers.clearResultStore,

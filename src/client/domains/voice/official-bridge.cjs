@@ -2,8 +2,11 @@
 
 // 官方语音桥普通模块（构建期由客户端运行时内联）。
 // 浏览器环境与语音配置由调用方显式注入；桥的公开 API 与诊断读数不变。
+// ═══════════════════════════════════════════════════════════════════════════
+
 function createOfficialVoiceBridge(deps) {
   const d = deps && typeof deps === 'object' ? deps : {};
+
   const window = d.window;
   const document = d.document;
   const navigator = d.navigator;
@@ -671,15 +674,33 @@ function ovbStartVad(getAmp, onSilence) {
     //   向上速率护栏 OVB_FLOOR_RISE/帧（约 10 s 追平环境变吵，但不会一大跳）。
     // R4（2026-11-11 · #15）：**取样门卡死兜底**。见下方 OVB_FLOOR_STALL_FRAMES 注释。
     let floorStall = 0;
-    // ⚠⚠ PE-39 修复（2026-11-17 · 全功能审查 low）：**删除三个零调用点的死判据**。
-    //   病历：`quietWindowCv` / `stallTailCv` / `stallCv` 与它们的 `stallRecent` 缓冲在
-    //     「2026-11-12 噪底重写」后**全部失去调用点**（各 1~2 次命中且都在定义处），
-    //     却仍留在这里 ⇒ 读者（和历次审查）会以为「CV 判据在参与决策」= **假安全感**。
-    //   ⛔ 不是「接入判据」：分位法（p20 + p10 钳制）已被实测证明足够，
-    //     再加 CV 门槛只会引入新的调参与误停风险（拆东墙）。故删码，不复活。
-    //   ⚠ 自查订正（2026-11-17）：`stallRecent` **不是**死缓冲（首版误删，实测 23 条用例红）——
-    //     它被下游「取样门卡死兜底」（OVB_FLOOR_STALL_* 那一段）真实消费，故**保留**，只删三个 CV 函数。
+    // ⚠⚠ PE-39 修复（2026-11-17 · 全功能审查 low）：删除**真正零调用点**的死判据。
+    //   审查清单点名的死判据是 `quietWindowCv` / `stallCv`（各只有定义处 1 次命中）——已删。
+    //   ⛔⛔ **`stallTailCv` 不在此列，千万不能再删**：它在下方「取样门卡死兜底」的守卫条件里
+    //     被**真实调用**（`above/len >= 0.9 && stallTailCv() >= OVB_FLOOR_RISE_MIN_CV`），
+    //     承担 E/A2 裁决的核心语义 ——「恒定电平不是房间噪声，不得触发强制重估」，
+    //     也就是**不许在用户还在小声说话时判定为环境抬升**。
+    //   病历（本批实证，2026-11-17）：首版误把 stallTailCv 一并删掉 ⇒ 调用点抛
+    //     `ReferenceError: stallTailCv is not defined`（105 帧夹具实测 34 次），被外层 catch 吞掉 ⇒
+    //     **整段兜底 100% 不可达 + tick 在出账前中断**（vad* 读数冻结、判停检查跳过），
+    //     而 177 条语音夹具仍全绿（它们不驱动这条真实路径）⇒ 典型「测试没牙」。
+    //   现恢复 stallTailCv（见下方定义），并新增回归锁（undefined 函数引用必须判红）。
     const stallRecent = [];   // 最近若干帧的 rms（取样门卡死兜底消费）
+    // 只看窗口**后段**（最近 1/3）的变异系数 —— 语音刚结束时整窗仍含高值帧，会把 CV 抬高到 0.8，
+    //   掩盖「尾段其实是平直电平」这一事实。实测：尾段窗口下 flat=0.000 / ripple≈0.25，可分。
+    //   ⚠ 这是「恒定电平 vs 真实房间噪声」的唯一判别器（E/A2 裁决），不得删除。
+    const stallTailCv = function () {
+      const n = stallRecent.length;
+      if (n < 10) return 0;
+      const from = Math.floor(n * 2 / 3);
+      let sum = 0, cnt = 0;
+      for (let i = from; i < n; i++) { sum += stallRecent[i]; cnt++; }
+      const mean = sum / cnt;
+      if (!(mean > 0)) return 0;
+      let varSum = 0;
+      for (let i = from; i < n; i++) { const d = stallRecent[i] - mean; varSum += d * d; }
+      return Math.sqrt(varSum / cnt) / mean;
+    };
     // ═══════════════════════════════════════════════════════════════════════════
     // 噪声底估计（2026-11-12 重写：此前叠加了 6 层互相干扰的护栏，现场反复失效）
     // ═══════════════════════════════════════════════════════════════════════════
@@ -781,22 +802,9 @@ function ovbStartVad(getAmp, onSilence) {
       //     而「真实环境确实很低」时 p10 仍会跟着降（自愈能力保留）。
       //     ⚠ 不改成「连续 N 帧才采纳」：那会给噪底引入 N 帧的响应延迟，测噪期更久；
       //       分位数在统计上已经等效地抵抗孤立离群点。
-      const below = [];
-      for (let i = 0; i < quietWindow.length; i++) {
-        const x = quietWindow[i];
-        if (x < ceiling) below.push(x);
-      }
-      let observed = Infinity;
-      if (below.length > 0) {
-        below.sort((a, b) => a - b);
-        // p10 下界（至少取 1 个）：len=1 时退化为该值（无法抗离群，但也没有第二点可用）
-        const idx = Math.min(below.length - 1, Math.max(0, Math.floor(below.length * 0.10)));
-        observed = below[idx];
-      }
-      // observed 有值 ⇒ 环境候选确实低于上界 ⇒ 可安全钳到 observed（低分位，抗单帧离群）。
-      // observed 无值 ⇒ 上界与实况脱节 ⇒ 不钳制（noiseFloor = q，分位自愈接管）。
-      const target = Number.isFinite(observed) ? observed : q;
-      noiseFloor = (q < target) ? q : target;
+      // ⚠ 2026-11-17：取样逻辑已抽成模块级纯函数 ovbObservedFloor（见文件上方），
+      //   生产与回归测试**共用同一份实现** —— 避免「测试里重写副本 = 假锁」。
+      noiseFloor = ovbObservedFloor(quietWindow, ceiling, q, 0.10);
       applyFloor();
     };
     // §7.4：连续静音帧数按**当前配置值**动态计算
@@ -1445,6 +1453,32 @@ function ovbYieldToOfficialIfPresent() {
   return true;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PE-14 的**纯函数**部分（2026-11-17 · 本轮体检补 · 修「假锁」）
+//   从「窗口内低于上界的样本」里取**低分位**作为观测环境，再与分位 q 取小。
+//   ⚠ 为什么独立成函数：原实现内联在 ovbStartVad 的闭包里 ⇒ 回归测试**无法调用真实函数**，
+//     只能在测试里重写副本（那是**假锁**：把 p10 改回 min，副本照旧通过）。
+//   语义：窗口里没有低于上界的样本 ⇒ 观察不到 ⇒ 不钳制（返回 q），宁可少救不可救坏。
+//   ⚠ 位置约束：必须落在测试夹具 `factoryBody()` 的切取区间内
+//     （首个 `//` 之后 → 最后一个 `\n  return ` 之前），否则测试求值时取不到。
+function ovbObservedFloor(samples, ceiling, q, quantile) {
+  const ratio = (typeof quantile === 'number' && quantile >= 0 && quantile <= 1) ? quantile : 0.10;
+  const below = [];
+  const list = Array.isArray(samples) ? samples : [];
+  for (let i = 0; i < list.length; i++) {
+    const x = list[i];
+    if (typeof x === 'number' && isFinite(x) && x < ceiling) below.push(x);
+  }
+  let observed = Infinity;
+  if (below.length > 0) {
+    below.sort(function (a, b) { return a - b; });
+    const idx = Math.min(below.length - 1, Math.max(0, Math.floor(below.length * ratio)));
+    observed = below[idx];
+  }
+  const target = Number.isFinite(observed) ? observed : q;
+  return (q < target) ? q : target;
+}
+
 const officialVoiceBridge = {
   OVB_REGION,
   install: installOfficialVoiceBridge,
@@ -1489,6 +1523,9 @@ const officialVoiceBridge = {
 };
 
 
+  // 测试面出口（2026-11-17 · PE-14 假锁修复）：把**真实**的噪底取样纯函数暴露出来，
+  //   使回归测试跑生产实现、而不是测试内重写的副本。⛔ 只读纯函数，不改任何运行期状态。
+  officialVoiceBridge.ovbObservedFloor = ovbObservedFloor;
   return officialVoiceBridge;
 }
 

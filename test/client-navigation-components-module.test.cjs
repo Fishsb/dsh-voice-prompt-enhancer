@@ -30,7 +30,13 @@ test('CNAV-02 工厂返回原组件同名函数，显式依赖生效', () => {
 test('CNAV-03 折叠组件默认展开与 ARIA 关联逻辑保留', () => {
   const source = fs.readFileSync(path.join(REPO_ROOT, 'src/client/ui/collapsible-section.cjs'), 'utf8');
   assert.ok(source.includes('React.useState(true)'));
-  assert.ok(source.includes("'aria-controls': ids.body"));
+  // ⚠⚠ F04-5 订正（2026-11-17 · 本轮体检）：**原断言 `source.includes("'aria-controls': ids.body")`
+  //   把缺陷形态反向固化了** —— 折叠态下 body 不渲染，恒设 aria-controls 会指向不存在的节点
+  //   （与 PE-33 同型）。当时它「绿」只是因为字符串还在，缺陷也还在。
+  //   现改为锁**条件设置**语义：展开时才设。
+  assert.ok(source.includes("'aria-controls': ids.body"), '必须存在 aria-controls（展开态引用 body）');
+  assert.match(source, /open \? \{ 'aria-controls': ids\.body \} : \{\}/,
+    'aria-controls 必须**只在展开时**设置（折叠态 body 不在 DOM，引用会悬空）');
   assert.ok(source.includes("'aria-labelledby': ids.head"));
   assert.ok(source.includes("role: 'region'"));
 });

@@ -237,8 +237,24 @@ test('GEOLOCK-08 学习词典 = 双集合（⛔ 不得退回逐条启停按钮�
   assert.ok(/entries\[i\]\.enabled === false \? offIdx : activeIdx/.test(s),
     '两个集合须由 entries[i].enabled **派生**（单一事实源）');
   // ③ 移组 = 写 enabled（不是「点开关」）
-  assert.ok(/patchAt\(i, \{ enabled: false \}\)/.test(s), '移出须写 enabled:false');
-  assert.ok(/patchAt\(i, \{ enabled: true \}\)/.test(s), '移回须写 enabled:true');
+  // ⚠⚠ 2026-11-17 本轮体修订（F04-1）：**原断言只锁字符串 `patchAt(i,{enabled:false})`，
+  //   而 PE-20 把 patchAt 改成「只置草稿、不 commit」后，移组按钮**点击完全无效果**，
+  //   本断言仍全绿**——它锁的是调用形态，不是「真的写了配置」**。典型「判据没牙」。
+  //   现改为**行为契约断言**（三条合取，仍静态可判但锁到落盘语义）：
+  //     ① 移组按钮必须走 `toggleAt`；② `toggleAt` 内必须有 `commit(`（立即落配置）；
+  //     ③ 文本输入用的 `patchDraftAt` 内**不得**有 `commit(`（保持 PE-20 的延迟提交本意）。
+  assert.ok(/toggleAt\(i, \{ enabled: true \}\)/.test(s), '移回必须走 toggleAt（立即落配置），不得走只置草稿的路径');
+  assert.ok(/toggleAt\(i, \{ enabled: false \}\)/.test(s), '移出必须走 toggleAt（立即落配置），不得走只置草稿的路径');
+  {
+    const idx = s.indexOf('const toggleAt');
+    assert.ok(idx >= 0, '必须存在 toggleAt（移组/开关类动作的立即提交入口）');
+    const tail = s.slice(idx, idx + 600);
+    assert.ok(/commit\(/.test(tail), 'toggleAt 内必须调用 commit() —— 否则按钮点了不写配置（F04-1 的形态）');
+    const didx = s.indexOf('const patchDraftAt');
+    assert.ok(didx >= 0, '必须存在 patchDraftAt（文本输入的延迟提交入口）');
+    const dtail = s.slice(didx, didx + 400);
+    assert.equal(/commit\(/.test(dtail), false, 'patchDraftAt 内不得 commit —— 否则 PE-20 的「输入中途不归一」失效');
+  }
   // ④ ⛔ 不得退回每行一个启停开关（旧形态：aria-pressed + voiceDictEnable/Disable 作按钮文本）
   assert.equal(/'aria-pressed'/.test(s), false, '⛔ 词条不得再有 aria-pressed 启停按钮（旧结构）');
   assert.equal(/t\('voiceDictEnable'\) \? t\('voiceDictDisable'\)/.test(s), false,
