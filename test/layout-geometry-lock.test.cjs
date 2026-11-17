@@ -819,12 +819,31 @@ test('GEOLOCK-B-V 变异自证：provider 下限回 104 ⇒ B2/B3 必红（锁 B
   assert.equal(after.elastic >= after.modelFloor, false,
     '变异②后 GEOLOCK-B3 第三段必红：剩余 ' + after.elastic + ' < 下限 ' + after.modelFloor);
 
-  // ⭐ 「合并成一项」的价值复算（2026-11-14 重锚）：
-  //   上一批的 586 标定基于 thinking 56 + level 62 两个控件并存的形态。本批把它们合并成
-  //   一个 reason（100px）后，同样的行宽下多出的余量 = 56 + 62 − 100 = **18px**，另有
-  //   一段不再需要的 gap（8px）⇒ 合计释放 26px。这条断言把「合并真的省了宽度」钉成算式。
-  const mergedSaving = 56 + 62 - 100 + 8;
-  assert.equal(mergedSaving, 26, '合并释放的宽度须为 26px（56+62−100+8）');
+  // ⭐ 「合并成一项」的价值 —— ⚠⚠ 2026-11-17 第二轮体检**删掉了一条恒真判据**：
+  //   原先是 `const mergedSaving = 56 + 62 - 100 + 8; assert.equal(mergedSaving, 26)` ——
+  //   这是**纯常量算术**，不含任何产品输入：把 CSS 改成任何值它都照绿，
+  //   既不证明「合并真的省了宽度」，也不证明「省了 26px」。属 regression-hunter 点名的
+  //   「判据改浅」形态（重锚时把真机标定降级成了自证式算式）。
+  //   ⇒ 现改为**两条对真实解析结果的断言**（数据全部来自 modelRowBudget(styles) 的解析）：
+  //     ① 固定项合计必须等于各项下限之和（证明预算确实在按 CSS 累加，不是拍出来的数）；
+  //     ② 当前行总需求必须落进可用宽（证明「溢出已被消除」这条结论仍成立）。
+  //   ⚠ 历史标定（56 + 62 − 100 + 8 = 26px）仅作**背景记录**保留在注释里，⛔ 不再作为断言：
+  //     那两个宽度来自已被删除的 thinking/level 控件，现在无法从 CSS 取回，
+  //     断言它们等于常数只是在自我复述。
+  // 预算的固定合计 = 各子项下限 + 图标组下限 + (子项数−1) 段间隙 + 失效徽标占位。
+  // 逐项复算一遍，证明 fixedSum 确实是**按解析结果累加**出来的（而不是写死的常数）。
+  // ⚠ 注意作用域：本用例里 `after` 是**变异后**（故意溢出）的预算 ⇒ 只对**未变异的 current**
+  //   做「必须装得下」的断言；composition 恒等式对两者都成立，故两处都验一遍。
+  const sumOf = (b) => b.items.reduce(function (n, it) { return n + it.floor; }, 0)
+    + b.icons.floor + b.gap * (b.childMax - 1) + MODEL_ROW_BADGE_BOUND_PX;
+  assert.equal(current.fixedSum, sumOf(current),
+    '未变异态：固定项合计必须等于「子项下限 + 图标 + 间隙 + 徽标占位」的逐项和（实得 '
+    + current.fixedSum + ' vs 求和 ' + sumOf(current) + '）');
+  assert.equal(after.fixedSum, sumOf(after),
+    '变异态：同一恒等式仍须成立（实得 ' + after.fixedSum + ' vs 求和 ' + sumOf(after) + '）');
+  assert.ok(current.fixedSum + current.modelFloor <= MODEL_ROW_AVAILABLE_PX,
+    '未变异态：行总需求（' + (current.fixedSum + current.modelFloor) + '）必须 ≤ 可用宽 '
+    + MODEL_ROW_AVAILABLE_PX + ' ⇒ 溢出已消除（这是 GEOLOCK-B2 的核心结论，此处独立复算一次）');
 
   // ⭐⭐ **标定**（本锁最关键的一条自证）：当前树的「全部子项下限 + 间隙」必须落进可用宽，
   //   且**余量恰为**上面算出的释放量的一半上下 —— 一句话：溢出是被消除的，不是被口径藏起来的。
