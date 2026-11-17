@@ -244,10 +244,13 @@ const ZH = {
   voiceAutoEnhanceModeTip: '语音自动增强使用的档位；「跟随全局」= 用设置页的当前模式（默认）。手动 ✨ 增强不受此设置影响',
   voiceAutoEnhanceModeFollow: '跟随全局',
   voiceCorrectionWindowLabel: '纠错参考轮数',
-  // 2026-11-17（用户需求 · 扩档）：下拉 7 档 = 关 / 无参考 / 1–5 轮会话。
-  //   提示语改为说清「参考用来干什么」+「无参考是什么」——原句只说了范围，用户看不出用途。
-  voiceCorrectionWindowTip: '纠错时参考最近几轮会话，用来判断某个音近词是不是本项目/本会话里的专名或既有术语；参考只能阻止误改、不能促成改动。「无参考」= 不读历史，仅按草稿本身判断。默认 1 轮。',
-  voiceCorrectionWindowNone: '无参考',
+  // 2026-11-17（用户需求 · 扩档）：下拉 7 档 = 关 / 开 / 1–5 轮会话（「开」原本叫「无参考」，
+  //   已按用户要求改用词；语义不变：开启纠错但不读历史）。
+  //   提示语改为说清「参考用来干什么」+「开」是什么——原句只说了范围，用户看不出用途。
+  voiceCorrectionWindowTip: '选具体轮数时，纠错会参考最近几轮会话，用来判断某个音近词是不是本项目/本会话里的专名或既有术语；参考只能阻止误改、不能促成改动。选「开」= 只开启纠错、不读历史，仅按草稿本身判断。默认 1 轮。',
+  // 2026-11-17（用户需求）：该档位标签由「无参考」改为「开」——语义不变（开启纠错但不读历史），
+  //   只是用词更贴合「开关」直觉：关 / 开 / 1–5 轮会话。键名与内部值 'none' 保持不变（避免无谓改动）。
+  voiceCorrectionWindowNone: '开',
   voiceCorrectionWindowRounds: '{n}轮会话',
   // CHG-143（纠错语音独立步）：语音纠错的开关与诊断文案（与自动增强**两个独立开关**）。
   //   ⚠ 显示名与内部标识符分离（CHG-133 口径）：内部键 `voice.correction`，显示名「语音纠错」。
@@ -594,8 +597,8 @@ const EN = {
   voiceAutoEnhanceModeTip: 'Mode used by voice auto-enhance; "Follow global" uses the mode selected in settings (default). Manual ✨ enhancement is unaffected',
   voiceAutoEnhanceModeFollow: 'Follow global',
   voiceCorrectionWindowLabel: 'Correction context rounds',
-  voiceCorrectionWindowTip: 'How many recent session rounds the correction step may reference, used to tell whether a near-sound word is a proper name or established term in this project/session. Reference can only prevent a wrong fix, never cause one. "No reference" reads no history and judges from the draft alone. Default 1 round.',
-  voiceCorrectionWindowNone: 'No reference',
+  voiceCorrectionWindowTip: 'With a round count, correction references that many recent session rounds to tell whether a near-sound word is a proper name or established term in this project/session. Reference can only prevent a wrong fix, never cause one. "On" enables correction without reading history and judges from the draft alone. Default 1 round.',
+  voiceCorrectionWindowNone: 'On',
   voiceCorrectionWindowRounds: '{n} round(s)',
   voiceCorrectionShort: 'Correct',
   voiceCorrectionTip: 'When on, correct the recognized speech text first (voice path only; manual ✨ enhancement never corrects). Independent from Auto-enhance: correction-only stops after correcting, both on means correct then enhance',

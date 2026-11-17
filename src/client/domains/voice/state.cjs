@@ -109,7 +109,7 @@ function createVoiceState(deps) {
       // UD-0052：语音自动增强档位。空串 = 跟随全局 `config.mode`（默认行为）。
       //   ⚠ 与 host `sanitizeVoiceCfg` **同批同形**（`M-3`）。
       autoEnhanceMode: normalizeAutoEnhanceMode(v && v.autoEnhanceMode),
-      // O4：纠错参考窗口轮数（0–5），默认 1；0 = 无参考。⚠ 同批同形（`M-3`）。
+      // O4：纠错参考窗口轮数（0–5），默认 1；0 = 「开」档（不读历史）。⚠ 同批同形（`M-3`）。
       correction: {
         enabled: (v && v.correction && v.correction.enabled === true) ? true : false,
         windowRounds: normalizeCorrectionWindowRounds(v && v.correction ? v.correction.windowRounds : undefined),

@@ -75,7 +75,7 @@ function createClientApp(deps) {
     normalizeVadSilenceMs: voiceApi.normalizeVadSilenceMs, rpcMethods: contracts.RPC_METHODS, CollapsibleSection, officialVoiceBridge,
     // ⚠⚠ 2026-11-17（纠错扩档 · 修复「新档位选不中」）：`normalizeCorrectionWindowRounds` **必须接线**。
     //   病历：原先它没出现在本 deps 里 ⇒ `section.cjs` 的 typeof 守卫取不到 ⇒ 走兜底
-    //     `(n === 2 || n === 3) ? n : 1`（chunk 时代的旧区间）⇒ 选「4轮/5轮/无参考」全被折回 1，
+    //     `(n === 2 || n === 3) ? n : 1`（chunk 时代的旧区间）⇒ 选「4轮/5轮/开（原无参考）」全被折回 1，
     //     UI 表现为「选中后立刻弹回 1 轮」。宿主侧其实是好的（实测 config/set 写 0/4/5 都原样读回）。
     normalizeCorrectionWindowRounds: contracts.normalizeCorrectionWindowRounds,
     // UD-0052（2026-11-08）：自动增强档位候选 = 契约模式五值（名称走既有 `modeLabel*` 键）。
