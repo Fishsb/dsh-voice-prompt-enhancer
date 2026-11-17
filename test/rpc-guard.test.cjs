@@ -123,6 +123,55 @@ test('RPCG-05 registerRpcRoute 端到端冒烟：跨站 403 / 同源放行分发
     assert.equal(got.status, 413, '真 socket：超 1MiB 必须收到 413（不得 ECONNRESET / 0 字节）');
     assert.match(String(got.body), /BODY_TOO_LARGE/, '真 socket：响应体必须含 BODY_TOO_LARGE');
   }
+  // ⚠⚠ RT-02（2026-11-17 · 第二轮体检 · blocker）：**带压缩中间件时 413 仍须可达**。
+  //   病历：上一版「writeJson(413) 后立刻 request.destroy()」对 curl（无 Accept-Encoding）有效，
+  //     但**真实浏览器一律带 `Accept-Encoding: gzip`**，而宿主套了 compression 中间件、gzip 异步 flush
+  //     ⇒ 立刻 destroy 会毁掉未 flush 的压缩流 ⇒ 浏览器只看到 0 字节 / `ERR_EMPTY_RESPONSE`
+  //     ⇒ 「契约码不可达」在浏览器形态下**原样成立**（实测：旧形态 gzip → ECONNRESET）。
+  //   本段用**真实 compression 中间件**（宿主同款）复演浏览器形态；缺包时显式 SKIP 并说明原因。
+  {
+    // ⚠ 不依赖第三方 `compression` 包（本项目 devDependencies 里没有 ⇒ 会被迫 SKIP = 判据失效）。
+    //   这里用 zlib 自建**异步 flush** 包装，复刻宿主中间件的本质行为：
+    //   响应体先进入压缩流，压缩流 flush 完才落到 socket ⇒ 若在此之前 destroy，客户端拿到 0 字节。
+    {
+      const http = require('node:http');
+      const zlib = require('node:zlib');
+      // ⚠ 优先用**宿主同款**的 `compression` 包（本仓 devDependencies 没有，故按需从宿主安装树解析）；
+      //   解析不到才退回 zlib 手写包装（行为等价：异步 flush 后才落到 socket）。
+      const tryRequire = (id) => { try { return require(id); } catch (e) { return null; } };
+      const compressionPkg = tryRequire('compression')
+        || tryRequire('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/compression');
+      const comp = compressionPkg
+        ? compressionPkg()
+        : ((req, rsp, next) => {
+          const ae = String(req.headers['accept-encoding'] || '');
+          if (!/gzip/.test(ae)) return next();
+          const gz = zlib.createGzip();
+          const rawWrite = rsp.write.bind(rsp), rawEnd = rsp.end.bind(rsp);
+          gz.on('data', (c) => rawWrite(c));
+          gz.on('end', () => rawEnd());
+          rsp.write = (c) => gz.write(c);
+          rsp.end = (c) => { if (c) gz.write(c); gz.end(); return rsp; };
+          const rawHead = rsp.writeHead.bind(rsp);
+          rsp.writeHead = (code, h) => { rsp.setHeader('content-encoding', 'gzip'); return rawHead(code, h); };
+          next();
+        });
+      const server = http.createServer((req, rsp) => comp(req, rsp, () => captured.handler(req, rsp)));
+      await new Promise((r) => server.listen(0, '127.0.0.1', r));
+      const port = server.address().port;
+      const got = await new Promise((resolve) => {
+        const body = 'x'.repeat(1024 * 1024 + 16);
+        const rq = http.request({ host: '127.0.0.1', port, path: '/dsh-voice-prompt-enhancer/rpc', method: 'POST', headers: { 'content-type': 'text/plain', 'content-length': Buffer.byteLength(body), 'accept-encoding': 'gzip, deflate, br' } }, (r) => {
+          let d = ''; r.on('data', (c) => { d += c; }); r.on('end', () => resolve({ status: r.statusCode }));
+        });
+        rq.on('error', (e) => resolve({ error: e.code || e.message }));
+        rq.write(body); rq.end();
+      });
+      server.close();
+      assert.equal(got.status, 413,
+        '带 gzip 压缩时超限体仍须收到 413（旧形态会 ECONNRESET / 0 字节：' + JSON.stringify(got) + '）');
+    }
+  }
   // ⑤ 非 POST → 405（原有契约不被破坏）
   res = mkRes();
   const getReq = new EventEmitter();

@@ -22,7 +22,10 @@ const ZH = {
   errVoiceOfficialUnavailable: '语音输入未能启动：未找到官方录音按钮，或官方语音尚未就绪',
   // PE-32（2026-11-17）：值面硬编码中文改走 i18n（EN 界面曾泄漏「已开启」「 条 · 」「N 天前」）。
   voiceStateOnSuffix: '已开启',
+  // RT-03（2026-11-17）：整句式模板（避免 EN 下 `Filler`+`on` 拼成 `Filleron`）
+  voiceStateOnTemplate: '{name}已开启',
   voiceDictCountPrefix: '{n} 条 · ',
+  voiceDictCountPrefixOne: '{n} 条 · ',  // 中文无量词变化，与复数同形（保留键以保两侧对称）
   voiceAgoJustNow: '刚刚',
   voiceAgoMinutes: '{n} 分钟',
   voiceAgoHours: '{n} 小时',
@@ -377,7 +380,10 @@ const EN = {
   errVoiceOfficialUnavailable: 'Voice input could not start: no official record button found, or official voice is not ready yet',
   // PE-32 (2026-11-17)
   voiceStateOnSuffix: 'on',
+  voiceStateOnTemplate: '{name} on',
   voiceDictCountPrefix: '{n} entries \u00b7 ',
+  // RT-03（2026-11-17）：单数形态（避免「1 entries」）
+  voiceDictCountPrefixOne: '{n} entry \u00b7 ',
   voiceAgoJustNow: 'just now',
   voiceAgoMinutes: '{n} min',
   voiceAgoHours: '{n} h',

@@ -446,7 +446,10 @@ function DictionaryEditor(props) {
     React.createElement('div', { className: 'va-gh' },
       React.createElement('b', null, t('voiceDictSection')),
       // PE-32（2026-11-17）：条数前缀走 i18n（EN 界面曾泄漏「 条 · 」）。
-      React.createElement('span', null, (entries.length > 0 ? t('voiceDictCountPrefix').replace('{n}', String(entries.length)) : '') + t('voiceDictTipShort')),
+      // RT-03（2026-11-17）：单数形态走独立键（EN 下 `1 entries` 是错的）。
+      React.createElement('span', null, (entries.length > 0
+        ? t(entries.length === 1 ? 'voiceDictCountPrefixOne' : 'voiceDictCountPrefix').replace('{n}', String(entries.length))
+        : '') + t('voiceDictTipShort')),
     ),
     React.createElement('div', { className: 'va-dict2' }, activeBox, offBox),
     // 完整说明（原 voiceDictTip 的既有消费者，不得因改版变孤儿）
@@ -768,8 +771,11 @@ function VoiceSection(props) {
   const summaryGist = (function () {
     const parts = [];
     // PE-32（2026-11-17）：后缀走 i18n（EN 界面曾泄漏「已开启」）。
-    if (fillerOn) parts.push(t('voiceRefineShort') + t('voiceStateOnSuffix'));
-    if (correctionOn) parts.push(t('voiceCorrectionShort') + t('voiceStateOnSuffix'));
+    // ⚠ RT-03（2026-11-17 第二轮体检）：**不得把「名字」与「状态后缀」直接相加**——
+    //   ZH 下「清口水词」+「已开启」恰好可拼；EN 下就是 `Filler` + `on` = **Filleron**（实测）。
+    //   改用整句式模板键（名字作为 {name} 代入），中英各自决定分隔与语序。
+    if (fillerOn) parts.push(t('voiceStateOnTemplate').replace('{name}', t('voiceRefineShort')));
+    if (correctionOn) parts.push(t('voiceStateOnTemplate').replace('{name}', t('voiceCorrectionShort')));
     if (vadOn) parts.push(t('voiceVadShort') + ' ' + silenceSec + ' ' + t('voiceVadSilenceUnit'));
     // 三项全关 ⇒ 明说（⛔ 空白会让人以为是没加载）
     if (!parts.length) parts.push(t('voiceAllOff'));
