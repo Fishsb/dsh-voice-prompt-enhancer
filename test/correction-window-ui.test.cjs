@@ -38,24 +38,72 @@ function voiceSectionDeps(src) {
   return null;
 }
 
-test('CWU-A 接线：app.cjs 必须把 normalizeCorrectionWindowRounds 传进 createVoiceSection', () => {
-  const deps = voiceSectionDeps(read('src/client/app.cjs'));
-  assert.ok(deps !== null, '必须能按花括号配平取出 createVoiceSection 的依赖对象');
-  assert.ok(/normalizeCorrectionWindowRounds\s*:/.test(deps),
-    'createVoiceSection 的 deps 必须含 normalizeCorrectionWindowRounds —— 否则 section.cjs 的 typeof 守卫取不到，'
-    + '会退回兜底实现，新档位被静默折回 1 轮（这就是「选不中」的根因）');
-  assert.ok(/normalizeCorrectionWindowRounds\s*:\s*contracts\.normalizeCorrectionWindowRounds/.test(deps),
-    '应当注入契约层的实现（contracts.normalizeCorrectionWindowRounds），而不是本地再造一份');
+// 取任意 `createXxx({ ... })` 调用的依赖对象文本（按花括号配平）。
+function depsOf(src, callName) {
+  const i = src.indexOf(callName + '({');
+  if (i < 0) return null;
+  const open = src.indexOf('{', i);
+  let depth = 0;
+  for (let k = open; k < src.length; k++) {
+    if (src[k] === '{') depth++;
+    else if (src[k] === '}') { depth--; if (depth === 0) return src.slice(open, k + 1); }
+  }
+  return null;
+}
+
+test('CWU-A 接线：两个工厂都必须拿到 normalizeCorrectionWindowRounds', () => {
+  const app = read('src/client/app.cjs');
+  // ⚠⚠ 2026-11-17 真实故障是**两处**都漏接：
+  //   · createVoiceSection 漏 ⇒ 下拉的 pick 处理器走旧兜底 ⇒ 选 4 归一成 1
+  //   · createVoiceState   漏 ⇒ mergeVoice 每次配置同步又把它折回 1
+  //   只修一处时症状几乎一样（都表现为「选了立刻弹回」），故本断言必须**两个工厂都覆盖**。
+  for (const call of ['createVoiceSection', 'createVoiceState']) {
+    const deps = depsOf(app, call);
+    assert.ok(deps !== null, '必须能按花括号配平取出 ' + call + ' 的依赖对象');
+    assert.match(deps, /normalizeCorrectionWindowRounds\s*:/,
+      call + ' 的 deps 必须含 normalizeCorrectionWindowRounds —— 否则该模块的 typeof 守卫取不到，'
+      + '会退回兜底（旧区间 1–3），新档位被静默折回 1 轮（这就是「选不中」的根因）');
+    assert.match(deps, /normalizeCorrectionWindowRounds\s*:\s*contracts\.normalizeCorrectionWindowRounds/,
+      call + ' 应当注入契约层实现（contracts.normalizeCorrectionWindowRounds），而不是本地再造一份');
+  }
 });
 
-test('CWU-B 兜底区间：section.cjs 的兜底归一必须接受 0–5', () => {
+test('CWU-B 兜底区间：两个模块的兜底归一都必须接受 0–5', () => {
+  // ⚠ 两处都验：section（下拉 pick）与 state（mergeVoice）。旧实现分别是
+  //   `(n === 2 || n === 3) ? n : 1` 与 `n >= 1 && n <= 3 ? n : 1` —— 都窄于契约 0–5。
+  // ⚠ 参数名随文件不同：section 是 `function (n)`，state 是 `(value) =>`（体内再 `const n = ...`）
+  //   ⇒ new Function 的形参名必须跟着换，否则体内 `const n` 与形参 `n` 撞名（实测 SyntaxError）。
+  for (const [rel, re, param] of [
+    ['src/client/domains/voice/section.cjs', /: function \(n\) \{([\s\S]*?)\};/, 'n'],
+    ['src/client/domains/voice/state.cjs', /: \(value\) => \{([\s\S]*?)\};/, 'value'],
+  ]) {
+    const src = read(rel);
+    const i = src.indexOf('const normalizeCorrectionWindowRounds');
+    assert.ok(i >= 0, rel + ' 必须声明 normalizeCorrectionWindowRounds');
+    const tail = src.slice(i, i + 900);
+    const m = tail.match(re);
+    assert.ok(m !== null, rel + ' 必须能定位兜底实现（实得锚点未命中）');
+    const body = m[1];
+    const fn = new Function(param, body);
+    for (const n of [0, 1, 2, 3, 4, 5]) {
+      assert.equal(fn(n), n, rel + ' 兜底归一必须原样接受 ' + n + '（实得 ' + fn(n) + '）');
+    }
+    for (const bad of [6, -1, 1.5, '4', null, undefined]) {
+      assert.equal(fn(bad), 1, rel + ' 兜底归一遇到非法值 ' + JSON.stringify(bad) + ' 须回落 1（实得 ' + fn(bad) + '）');
+    }
+    assert.equal(/n === 2 \|\| n === 3|n >= 1 && n <= 3/.test(body), false,
+      rel + ' 的兜底不得停留在旧区间（会把 0/4/5 折回 1）');
+  }
+});
+
+// 下面这段是原 CWU-B 的行为断言主体（保留：对 section 的兜底再验一遍“真的求值”，
+// 与上面的双文件循环不重复——它额外锁了「锚点形态」不被改动）。
+test('CWU-B2 兜底行为：section 的兜底函数求值后 0–5 原样通过', () => {
   const src = read('src/client/domains/voice/section.cjs');
   const i = src.indexOf('const normalizeCorrectionWindowRounds');
-  assert.ok(i >= 0, 'section.cjs 必须声明 normalizeCorrectionWindowRounds');
   const tail = src.slice(i, i + 700);
-  // 取出兜底函数体（三目里的 function 分支）
   const m = tail.match(/: function \(n\) \{([\s\S]*?)\};/);
-  assert.ok(m !== null, '必须能定位兜底实现（形如 : function (n) { ... };）');
+  assert.ok(m !== null, '必须能定位 section 的兜底实现（形如 : function (n) { ... };）');
   const body = m[1];
   // 行为断言：把兜底函数真的求值一遍，逐值验 —— 比正则更硬。
   const fn = new Function('n', body);
@@ -90,7 +138,9 @@ test('CWU-V 变异自证：删接线 / 窄化兜底 都必须被本文件判红'
   const appSrc = read('src/client/app.cjs');
   const secSrc = read('src/client/domains/voice/section.cjs');
   // 变异①：把 app.cjs 里那行接线删掉
-  const appMut = appSrc.replace(/\s*normalizeCorrectionWindowRounds\s*:\s*contracts\.normalizeCorrectionWindowRounds,/, '');
+  // ⚠ 用 g 去掉**全部**接线（createVoiceState 与 createVoiceSection 各一处）；
+  //   只去第一处时另一个工厂仍命中，自证会假通过（实测踩过）。
+  const appMut = appSrc.replace(/\s*normalizeCorrectionWindowRounds\s*:\s*contracts\.normalizeCorrectionWindowRounds,/g, '');
   assert.notEqual(appMut, appSrc, '前置：变异①锚点须命中（否则自证无效）');
   const depsMut = voiceSectionDeps(appMut);
   assert.equal(/normalizeCorrectionWindowRounds\s*:/.test(depsMut), false,

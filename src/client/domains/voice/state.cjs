@@ -41,11 +41,14 @@ function createVoiceState(deps) {
   const normalizeAutoEnhanceMode = typeof d.normalizeAutoEnhanceMode === 'function'
     ? d.normalizeAutoEnhanceMode
     : (value) => (typeof value === 'string' && ENHANCE_MODES.indexOf(value) >= 0 ? value : '');
+  // ⚠⚠ 2026-11-17 修复：兜底区间必须与契约同区间（0–5）。
+  //   病历：兜底长期是 1–3 ⇒ 接线缺失时 `mergeVoice` 会把 0/4/5 静默折回 1，
+  //     表现为「下拉选了立刻弹回」，而宿主侧其实是对的。
   const normalizeCorrectionWindowRounds = typeof d.normalizeCorrectionWindowRounds === 'function'
     ? d.normalizeCorrectionWindowRounds
     : (value) => {
       const n = typeof value === 'number' ? value : NaN;
-      return Number.isInteger(n) && n >= 1 && n <= 3 ? n : 1;
+      return Number.isInteger(n) && n >= 0 && n <= 5 ? n : 1;
     };
   const consoleSvc = d.console || (typeof console !== 'undefined' ? console : null);
   const VOICE_CFG_DEFAULTS = JSON.parse(JSON.stringify(d.defaults || {}));

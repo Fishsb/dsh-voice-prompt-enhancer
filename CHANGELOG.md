@@ -20,14 +20,19 @@
 
 ## [Unreleased]
 
+- **修复（续）：纠错新档位仍选不中 —— 第二处未接线在 `createVoiceState`（2026-11-17 · 用户复报）**：上一版只补了 `createVoiceSection` 的接线，症状未消。
+  - **第二处根因**：`src/client/app.cjs:56` 的 **`createVoiceState` deps 同样没接** `normalizeCorrectionWindowRounds`，而 `src/client/domains/voice/state.cjs:45-48` 的兜底是旧区间 `n >= 1 && n <= 3 ? n : 1`。该归一在 **`mergeVoice`**（每次配置同步/加载都跑）里被调用 ⇒ 即使下拉正确写出 4，状态合并又把它折回 1，界面重渲染成「1轮会话」。
+  - **为什么两处症状一样**：一处折在**下拉 pick 处理器**，一处折在**状态合并**；只修任一处，用户看到的都是「选了立刻弹回」，无法从现象区分 ⇒ 必须同时锁两处。
+  - **修法**：① `createVoiceState` deps 补 `normalizeCorrectionWindowRounds: contracts.normalizeCorrectionWindowRounds`；② `state.cjs` 兜底改同区间 `n >= 0 && n <= 5 ? n : 1`。
+  - **回归锁升级**：`CWU-A` 改为**两个工厂都验**（`createVoiceSection` + `createVoiceState`，各自按花括号配平取 deps）；`CWU-B` 改为**两个模块的兜底都求值验证**（`new Function` 逐值跑 0–5 与非法回落，参数名随文件不同）；`CWU-V` 变异改用 `g` 去掉**全部**接线（只去第一处会因另一工厂仍命中而假通过）。
+  - **顺带核实宿主投递机制（此前只是假设）**：核心 `dsh-client-modules` 的 `readClientBundle` 直接 `read()`（`() => readFileSync(clientPath)`，无内存缓存），bundle 图行以 artifact 修订号作 cache-busting query ⇒ **客户端产物确实由宿主按需读盘，页面刷新即可生效**，不必重启；故「选不中」不是缓存问题，就是上述两处归一。
+  **已实测**：`npm test` **1032/1032**；gate 七环 exit 0；`build --check` 双绿；`sync-runtime` 已部署（产物含**两处**接线，兜底 0–5 出现 3 次）；契约层归一逐值验证 `0→0 / 4→4 / 5→5 / 6→1 / -1→1 / '4'→1`。
 - **修复：纠错新档位「选不中」（2026-11-17 · 用户报障）—— 客户端接线缺失 · [PE-F04]**：扩档到 7 档后，选中「无参考 / 4轮 / 5轮」会**立刻弹回 1 轮**。
   - **根因（两处叠加，都在客户端，宿主侧实测是好的）**：① `src/client/app.cjs` 的 `createVoiceSection` deps **根本没接** `normalizeCorrectionWindowRounds`；② `src/client/domains/voice/section.cjs` 的**兜底实现**仍停在 chunk 时代的旧区间 `(n === 2 || n === 3) ? n : 1`。⇒ 选 4 → 归一成 1 → 写回配置 → 界面重渲染为「1轮会话」。
   - **为什么原有测试全绿**：`HCR-06` 判的是**宿主**的 `resolveCorrectionWindow`，而故障在**客户端接线**——宿主与客户端各有一份归一，判据只锁了其中一份。
   - **修法**：① 接线补上 `normalizeCorrectionWindowRounds: contracts.normalizeCorrectionWindowRounds`；② 兜底改为同区间 `(Number.isInteger(n) && n >= 0 && n <= 5) ? n : 1`（兜底只作最后防线，真修法是接线）。
   - **新增回归锁 `test/correction-window-ui.test.cjs`**（4 条）：`CWU-A` 锁**接线**（按花括号配平取 deps 对象，必须含该键且注入契约实现）、`CWU-B` 锁**兜底区间**（把兜底函数**真的求值**，逐值验 0–5 原样接受、非法回落 1）、`CWU-C` 锁**档位齐备**（上界 5 + off/none 两档 + `none` 写 `windowRounds:0` + 当前值把 0 映射到 none）、`CWU-V` 变异自证（删接线 / 窄化兜底 都必须被判红）。
   **已实测**：`npm test` **1031/1031**；gate 七环 exit 0；`build --check` 双绿；已 `sync-runtime`（产物含接线与新区间，`lib/client.cjs` md5 与仓库一致）。⚠ 本次**仅客户端改动** ⇒ 浏览器 Ctrl+F5 即可，不需要重启 DSH。
-## [Unreleased]
-
 - **语音纠错参考扩档（2026-11-17 · 用户需求）—— 下拉 4 档 → 7 档 · [PE-F04]**：纠错参考轮数由「关 / 1–3 轮」扩为 **关 / 无参考 / 1–5 轮会话**，并把悬停提示从「只说范围」改为「说清用途」。
   - **配置面**：`voice.correction.windowRounds` 合法区间 **1–3 → 0–5**（`lib/voice-config.cjs` 归一器）。**默认仍是 1**，既有行为不变。**`0` 从「非法回落 1」改为合法档位「无参考」**。
   - **宿主面**（`src/host/domains/voice/correction.cjs`）：`resolveCorrectionWindow` 遇 `0` 返回 **`[0,0]`**；`fetchCorrectionHistory` 在**入口处**先判窗口 ⇒ 无参考时**一次 `readSurface` 都不发**（省一次宿主查询），历史文本为空串。`correction.md` 本就写明「参考为空时仅依据草稿本身判断」，故提示词无需改动。

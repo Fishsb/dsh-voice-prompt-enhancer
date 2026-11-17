@@ -53,7 +53,11 @@ function createClientApp(deps) {
   const configApi = createClientState({ host: d.host, timerRef, storage });
   const configState = configApi.configState;
   const helpers = createClientHelpers({ host: d.host, configState, dictionary: ZH, storage, resultStatusOf: contracts.resultStatusOf });
-  const voiceApi = createVoiceState({ host: d.host, storage, timerSvc, fillerState: shared.fillerState, defaults: contracts.VOICE_CONFIG_DEFAULTS, normalizeVadSilenceMs: contracts.normalizeVadSilenceMs, normalizeDictionaryEntries: contracts.normalizeDictionaryEntries, rpcMethods: contracts.RPC_METHODS, console: d.console });
+  // ⚠⚠ 2026-11-17（纠错扩档 · **第二处**未接线）：`normalizeCorrectionWindowRounds` 也必须给 createVoiceState。
+  //   病历：它原先同样没接 ⇒ state.cjs 的兜底（旧区间 1–3）接管 ⇒ `mergeVoice` 每次配置同步都把
+  //     windowRounds 0/4/5 折回 1。表现与「下拉选不中」一致，但作用点在**状态合并**而非下拉本身，
+  //     故只修 createVoiceSection 不够。
+  const voiceApi = createVoiceState({ host: d.host, storage, timerSvc, fillerState: shared.fillerState, defaults: contracts.VOICE_CONFIG_DEFAULTS, normalizeVadSilenceMs: contracts.normalizeVadSilenceMs, normalizeCorrectionWindowRounds: contracts.normalizeCorrectionWindowRounds, normalizeDictionaryEntries: contracts.normalizeDictionaryEntries, rpcMethods: contracts.RPC_METHODS, console: d.console });
   const voiceCfgState = voiceApi.voiceCfgState;
   const correction = createCorrectionState({ voiceCfgState, correctionStateCore: { CORRECTION_PHASES: shared.CORRECTION_PHASES, correctionPhaseKnown: shared.correctionPhaseKnown, correctionPhaseOf: shared.correctionPhaseOf, correctionFailureTicket: shared.correctionFailureTicket, correctionFailureConsume: shared.correctionFailureConsume } });
   const officialVoiceBridge = createOfficialVoiceBridge({
