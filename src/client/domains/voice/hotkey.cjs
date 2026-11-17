@@ -45,6 +45,17 @@ function createVoiceHotkey(deps) {
   const voicePostprocessHas = d.voicePostprocessHas;
   const stripFillers = d.stripFillers;
   const runFiller = d.runFiller;
+  // ⚠⚠ 2026-11-18 修复（用户报「热键组合键不能设置了」）：**录制位必须读/写同一个真实 window**。
+  //   病历：本文件 `const window = d.window` 遮蔽全局；`d.window` 为 null/undefined 时
+  //     `typeof window !== 'undefined'` 对 **null 也是 true**（typeof null === 'object'）⇒
+  //     `window.__voiceHotkeyCapturing` 直接抛 TypeError ⇒ 全局监听在**每次按键都抛错**；
+  //     同时 section.cjs 的 onFocus 也在同一行抛错 ⇒ `setHotkeyCapture(true)` 执行不到 ⇒
+  //     录制态永远不进入 ⇒ 输入框点了没反应 ⇒ **改不了组合键**（清除后又能改，因为那时没有监听）。
+  //   ⇒ 统一解析：优先真实全局（就是 section 写的那一个），否则退回注入值；**两处都用 falsy 判空**。
+  //   ⚠ 位置约束：**必须写在依赖声明之后**。测试夹具 factoryBody() 从「工厂里第一个 `//`」开始切，
+  //     若本注释出现在依赖声明中间，切片会把 `const configState` 之类一起带进正文，
+  //     与沙箱注入的同名形参重复声明 ⇒ SyntaxError（实测 34 条用例红）。
+  const captureWindow = (typeof globalThis !== 'undefined' && globalThis.window) ? globalThis.window : (window || null);
 // P1-a（2026-10-13 缩批）：热键通道 —— 自 mic-button.js / voice-insert.js **整段搬出**。
 // P2-补做·热键改走官方路径（2026-10-13 · UD-0016 / CHG-011）：**形态变更** ——
 //   热键不再自建采集链（自行取麦 / 自行录音 / 自行停止 / 自行调 voice/transcribe 已退役），
@@ -479,13 +490,14 @@ function VoiceHotkeyHost(props) {
     const hk = parseVoiceHotkey(hkCfg.combo);
     if (!hk) return undefined;
     const onKeyDown = (e) => {
-      if (typeof window !== 'undefined' && window.__voiceHotkeyCapturing) return;
+      // ⚠ 用 falsy 判空（`typeof` 对 null 为 'object'，旧写法会在 window=null 时抛 TypeError）
+      if (captureWindow && captureWindow.__voiceHotkeyCapturing) return;
       if (e.repeat || !matchVoiceHotkey(e, hk)) return;
       e.preventDefault(); e.stopPropagation();
       pressStart();
     };
     const onKeyUp = (e) => {
-      if (typeof window !== 'undefined' && window.__voiceHotkeyCapturing) return;
+      if (captureWindow && captureWindow.__voiceHotkeyCapturing) return;
       // PE-16（2026-11-17）：keyup 只认主键 code（先松修饰键时逐位比较会丢停止信号）。
       if (!matchHotkeyKeyUp(e, hk)) return;
       e.preventDefault(); e.stopPropagation();

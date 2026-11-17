@@ -20,6 +20,13 @@
 
 ## [Unreleased]
 
+- **修复：热键组合键「不能设置了」（2026-11-18 · 用户报障）—— 录制位写在 null/undefined 的 window 上 · [PE-F04]**：点热键输入框无反应、按组合键不写入；**清除热键后又能改**。
+  - **根因**：`section.cjs` 与 `hotkey.cjs` 都有 `const window = d.window`（遮蔽全局）。`d.window` 为 `null`/`undefined` 时，旧判空 `typeof window !== 'undefined'` **对 null 也为真**（`typeof null === 'object'`）⇒ `window.__voiceHotkeyCapturing = true` 抛 `TypeError`；该异常发生在 `onFocus` 内、**早于 `setHotkeyCapture(true)`** ⇒ 录制态永远进不去。同时 `hotkey.cjs` 的全局 keydown/keyup 每次按键都抛错。
+  - **为什么「清除后又能改」**：没有配置热键时不装全局监听，`hotkey.cjs` 那段不会执行；一旦配了热键，全局监听（capture 阶段 + `stopPropagation`）就会把按键吃掉，而它本该因录制位让路——但录制位根本没写成功。
+  - **修法**：两处统一解析 `captureWindow = globalThis.window || 注入的 window || null`，并改用 **falsy 判空**（`captureWindow && captureWindow.__voiceHotkeyCapturing`）。⛔ 不删模块级 `const window = d.window`：其它逻辑（MarqueeSelect 等）依赖注入形态。
+  - **新增回归锁 `test/hotkey-capture-ui.test.cjs`（9 条）**：用**最小假 React 渲染真实 `createVoiceSection`**，从渲染树取到热键输入框，直接调用它真实的 `onFocus`/`onKeyDown`/`onBlur`——断言的是**真实组件代码**而非源码字符串。覆盖：进入录制态、组合键写入（含 `Ctrl+Alt+Shift+Meta` 顺序）、纯修饰键不写入、写入后退出录制态并 blur、Esc 取消、失焦取消、**`d.window` 缺省时写入真实全局**、**`d.window=null` 不得抛错**、`hotkey.cjs` 判空形态静态锁。此前该链路**零行为测试**（历史两次故障都靠用户复报）。
+  - ⚠ **一处自查订正**：注释/新增行最初插在**依赖声明中间**，导致测试夹具 `factoryBody()`（从工厂里第一个 `//` 起切）把 `const configState` 等一并带入正文，与沙箱同名形参重复声明 ⇒ 34 条用例 SyntaxError 红。已把该块移到**依赖声明之后**，并在注释里写明这条位置约束。
+  **已实测**：`npm test` **1041/1041**；gate 七环 exit 0；`build --check` 双绿；`sync-runtime` 已部署（两处 `captureWindow` 均在产物中，md5 与仓库一致）。⚠ 仅客户端改动 ⇒ 浏览器 Ctrl+F5 即可。
 - **纠错参考档位用词：`无参考` → `开`（2026-11-17 · 用户需求）· [PE-F04]**：7 档现为 **关 / 开 / 1轮会话 / 2轮会话 / 3轮会话 / 4轮会话 / 5轮会话**。
   - 仅改**用词**，语义与配置不变：「开」仍是 `enabled:true + windowRounds:0`（开启纠错、不读历史），内部值仍为 `none`、键名仍为 `voiceCorrectionWindowNone`（避免无谓改动）。
   - 悬停提示（中英同步）改为按「选具体轮数」/「选开」两种情形分别说明，避免读者把「开」误解成「不纠错」。

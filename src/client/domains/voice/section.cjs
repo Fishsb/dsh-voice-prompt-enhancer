@@ -473,10 +473,20 @@ function VoiceSection(props) {
   //     ② 唯一的复位路径是 `onBlur`，而折叠设置段 / 切 tab 时 React **不派发 blur**
   //        （节点直接卸载）⇒ `window.__voiceHotkeyCapturing` 永久为 true ⇒ **热键彻底失效且无提示**。
   //   修法：① Esc / 选完键后显式 `blur()` 输入框；② 卸载时在 useEffect 清理里复位全局位。
+  // ⚠⚠⚠ 2026-11-18 修复（用户报「热键组合键不能设置了」· 真根因）：**录制位必须写在真实全局 window 上**。
+  //   病历：本文件第 26 行有 `const window = d.window`（模块级遮蔽）。宿主/装配层**不传** `d.window` 时，
+  //     此处的 `window` 是 `undefined` ⇒ 下面三处 `typeof window !== 'undefined'` **恒假** ⇒
+  //     `__voiceHotkeyCapturing` **永远不置位**。后果链：
+  //       · hotkey.cjs 的全局 keydown/keyup 监听读的是**真实** `window.__voiceHotkeyCapturing`（恒 false）
+  //         ⇒ 录制期间它**不让路**；它用 capture 阶段 + `stopPropagation()`，一旦匹配上已配置的热键，
+  //         事件就到不了录制输入框 ⇒ `onKeyDown` 不触发 ⇒ **改不了组合键**（只有清除热键后才又能改）。
+  //   ⇒ 新增 `captureWindow`：优先真实全局（hotkey.cjs 读的也是它），取不到才退回注入的 `d.window`。
+  //   ⛔ 不要把第 26 行的遮蔽删掉：其它逻辑（MarqueeSelect 等）依赖注入形态。
+  const captureWindow = (typeof globalThis !== 'undefined' && globalThis.window) ? globalThis.window : window;
   const hotkeyInputRef = React.useRef(null);
-  const startHotkeyCapture = () => { if (typeof window !== 'undefined') window.__voiceHotkeyCapturing = true; setHotkeyCapture(true); };
+  const startHotkeyCapture = () => { if (captureWindow) captureWindow.__voiceHotkeyCapturing = true; setHotkeyCapture(true); };
   const cancelHotkeyCapture = () => {
-    if (typeof window !== 'undefined') window.__voiceHotkeyCapturing = false;
+    if (captureWindow) captureWindow.__voiceHotkeyCapturing = false;
     setHotkeyCapture(false);
     // ① 必须一并移走焦点：否则后续按键仍由本 handler 接（实测 Esc 后按 KeyA 仍写入 combo）
     try {
@@ -487,7 +497,7 @@ function VoiceSection(props) {
   // ② 卸载兜底：折叠 / 切 tab 时 React 不派发 blur，必须在这里复位全局位（否则热键永久失效）
   React.useEffect(function () {
     return function () {
-      if (typeof window !== 'undefined') window.__voiceHotkeyCapturing = false;
+      if (captureWindow) captureWindow.__voiceHotkeyCapturing = false;
     };
   }, []);
   const onHotkeyKeyDown = (e) => {
