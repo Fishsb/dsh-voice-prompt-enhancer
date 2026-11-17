@@ -535,9 +535,13 @@ function VoiceSection(props) {
   // 纠错参考轮数归一（0–5，0 = 无参考）：与 host / client 白名单同源，优先取装配层注入的契约实现。
   //   ⚠ 用 typeof 守卫读 d：factoryBody() 会切掉依赖声明块，测试沙箱里 d 未定义 ⇒ 回落同值实现。
   const _cfgDeps = (typeof d !== 'undefined' && d && typeof d === 'object') ? d : {};
+  // ⚠⚠ 2026-11-17 修复：兜底实现**必须与契约同区间**（0–5）。
+  //   病历：兜底长期停留在 chunk 时代的 `(n === 2 || n === 3) ? n : 1` ⇒ 一旦接线缺失
+  //     （实测确实缺失），选任何新档位都被静默折回 1，UI 表现为「选不中」。
+  //   ⇒ 兜底改为同区间；但**真正的修法是接线**（见 app.cjs 的 deps），兜底只作最后防线。
   const normalizeCorrectionWindowRounds = typeof _cfgDeps.normalizeCorrectionWindowRounds === 'function'
     ? _cfgDeps.normalizeCorrectionWindowRounds
-    : function (n) { return (n === 2 || n === 3) ? n : 1; };
+    : function (n) { return (Number.isInteger(n) && n >= 0 && n <= 5) ? n : 1; };
 
   // 三个开关的真值（单一事实源：voiceCfgState，不从 props 传）
   const fillerCfg = v.filler || {};
