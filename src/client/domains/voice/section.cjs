@@ -532,7 +532,7 @@ function VoiceSection(props) {
   //   （清口水词为纯本地规则，无模型可配）。
 
   // ── 本段依赖的派生值与局部状态（2026-11-13 排版批：声明集中在此之前，控件区只做装配）──
-  // 纠错参考轮数归一（1–3）：与 host / client 白名单同源，优先取装配层注入的契约实现。
+  // 纠错参考轮数归一（0–5，0 = 无参考）：与 host / client 白名单同源，优先取装配层注入的契约实现。
   //   ⚠ 用 typeof 守卫读 d：factoryBody() 会切掉依赖声明块，测试沙箱里 d 未定义 ⇒ 回落同值实现。
   const _cfgDeps = (typeof d !== 'undefined' && d && typeof d === 'object') ? d : {};
   const normalizeCorrectionWindowRounds = typeof _cfgDeps.normalizeCorrectionWindowRounds === 'function'
@@ -680,10 +680,16 @@ function VoiceSection(props) {
   const autoEnhanceOptions = [{ value: 'off', text: OFF_TEXT }, { value: '', text: t('voiceAutoEnhanceModeFollow') }]
     .concat(ENHANCE_MODE_VALUES.map((m) => ({ value: m, text: t('modeLabel' + (m.charAt(0).toUpperCase() + m.slice(1))) })));
 
-  // ② 语音纠错：关 / 参考 N 轮（档位 = correction.windowRounds，1–3）
+  // ② 语音纠错：**7 档** = 关 / 无参考 / 1–5 轮会话（档位 = correction.windowRounds，0–5）
+  //   ⚠ 2026-11-17（用户需求 · 扩档）：原为 4 档（关 / 1–3 轮）。新增「无参考」= windowRounds 0，
+  //     语义是「纠错照跑，但不喂会话历史」（correction.md 已支持 history 为空）。
   const windowRoundsNow = (v.correction && Number.isInteger(v.correction.windowRounds)) ? v.correction.windowRounds : 1;
-  const correctionOptions = [{ value: 'off', text: OFF_TEXT }]
-    .concat([1, 2, 3].map((n) => ({ value: String(n), text: n + ' ' + t('voiceCorrectionWindowUnit') })));
+  const CORRECTION_WINDOW_MAX = 5;
+  const correctionOptions = [{ value: 'off', text: OFF_TEXT }, { value: 'none', text: t('voiceCorrectionWindowNone') }]
+    .concat(Array.from({ length: CORRECTION_WINDOW_MAX }, function (_, k) {
+      const n = k + 1;
+      return { value: String(n), text: t('voiceCorrectionWindowRounds').replace('{n}', String(n)) };
+    }));
 
   // ③ 清口水词：关 / 开（无档位，纯布尔）
   const fillerOptions = [{ value: 'off', text: OFF_TEXT }, { value: 'on', text: t('voiceAutoEnhanceOn') }];
@@ -704,6 +710,8 @@ function VoiceSection(props) {
   };
   const onCorrectionPick = (raw) => {
     if (raw === 'off') { saveVoiceCfg({ correction: { enabled: false, windowRounds: windowRoundsNow } }); return; }
+    // 「无参考」也是**开启**纠错（只是不读历史）⇒ enabled:true + windowRounds:0
+    if (raw === 'none') { saveVoiceCfg({ correction: { enabled: true, windowRounds: 0 } }); return; }
     saveVoiceCfg({ correction: { enabled: true, windowRounds: normalizeCorrectionWindowRounds(Number(raw)) } });
   };
   const onFillerPick = (raw) => { saveVoiceCfg({ filler: { enabled: raw !== 'off' } }); };
@@ -817,7 +825,7 @@ function VoiceSection(props) {
     // ② 语音纠错 —— 关 / 参考 N 轮
     field(t('voiceCorrectionShort'),
       modeSelect('dsh-vi-correction', t('voiceCorrectionShort'), t('voiceCorrectionTip'),
-        correctionOn ? String(windowRoundsNow) : 'off', onCorrectionPick, correctionOptions)),
+        correctionOn ? (windowRoundsNow === 0 ? 'none' : String(windowRoundsNow)) : 'off', onCorrectionPick, correctionOptions)),
     // ③ 清口水词 —— 关 / 开
     field(t('voiceRefineShort'),
       modeSelect('dsh-vi-filler', t('voiceRefineShort'), t('voiceRefineFillerTip'),

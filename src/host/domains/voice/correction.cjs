@@ -17,11 +17,18 @@ const { matchVoiceDictionary } = require('../../../shared/contracts/voice-config
 
 const CORRECTION_WINDOW = [1, 1];
 
-// 纠错参考窗口：默认 [1,1]（最近 1 轮）。可经 voice.correction.windowRounds 配置为 1–3 轮。
-// 非法/缺省 ⇒ 回落默认；只改「读多少轮」，⛔ 不改 UD-0051「必须有会话参考」这条。
+// 纠错参考窗口：默认 [1,1]（最近 1 轮）。可经 voice.correction.windowRounds 配置为 **0–5**。
+//   · 0   ⇒ 返回 **[0,0]** = **无参考**：纠错照跑，但不读会话历史（调用方据此跳过 readSurface，
+//     提示词里 {history} 为空 —— correction.md 已写明「参考为空时仅依据草稿本身判断」）。
+//   · 1–5 ⇒ [1,N]。
+//   · 非法/缺省 ⇒ 回落 [1,1]。
+//   ⚠ 2026-11-17（用户需求 · 扩档）：`0` 从「非法回落」改为**合法档位**「无参考」。
+//     这是对 UD-0051「必须有会话参考」的**用户显式覆盖**（用户可在 UI 上主动选无参考）——
+//     默认仍是 1 轮，所以既有行为不变。
 function resolveCorrectionWindow(cfg) {
   const n = cfg && cfg.correction && cfg.correction.windowRounds;
-  if (!Number.isInteger(n) || n < 1 || n > 3) return CORRECTION_WINDOW;
+  if (!Number.isInteger(n) || n < 0 || n > 5) return CORRECTION_WINDOW;
+  if (n === 0) return [0, 0];
   return [1, n];
 }
 const CORRECTION_TIMEOUT_MS = 30000;
@@ -79,6 +86,12 @@ function createCorrectionRunner(deps) {
   const historyTimeoutMs = d.historyTimeoutMs;
 
   async function fetchCorrectionHistory(sessionId, config) {
+    // ⚠ 2026-11-17（扩档）：**先判窗口再读会话面** —— windowRounds=0（无参考）时
+    //   一次 readSurface 都不该发（省一次宿主查询，也让「无参考」的语义干净）。
+    if (resolveCorrectionWindow(config)[0] === 0) {
+      hlog('[correction] history none (windowRounds=0)');
+      return '';
+    }
     const sq = ctx && typeof ctx.get === 'function' ? ctx.get('sessionQuery') : null;
     if (!sq || typeof sq.readSurface !== 'function') {
       hlog('[correction] history skipped no-readSurface');
@@ -90,6 +103,7 @@ function createCorrectionRunner(deps) {
       if (waitAbort.timedOut()) { hlog('[correction] history timeout'); return ''; }
       const events = extractHistoryConclusions(surface && surface.events);
       const win = resolveCorrectionWindow(config);
+      // 窗口在**入口处**已判过一次（0 = 无参考直接空返回），此处必为 1–5。
       const lines = splitHistoryRounds(events, win[0], win[1]);
       const text = lines.join('\n');
       hlog('[correction] history rounds=' + win[0] + '-' + win[1] + ' events=' + events.length + ' chars=' + text.length);

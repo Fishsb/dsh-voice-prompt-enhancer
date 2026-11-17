@@ -4787,7 +4787,7 @@ const VOICE_CONFIG_DEFAULTS = Object.freeze({
   // UD-0052（2026-11-08 · 语音四件收口批）：语音自动增强的**档位**独立于全局 `config.mode`。
   //   空串 = 跟随全局（默认行为，⛔ 不得改）；其余为 MODE_KEYS 五值之一。
   autoEnhanceMode: '',
-  // windowRounds（2026-11-08 · O4）：纠错参考窗口轮数（1–3），默认 1 = 既有行为。
+  // windowRounds（2026-11-08 · O4；2026-11-17 扩档 0–5）：纠错参考窗口轮数，默认 1 = 既有行为；0 = 无参考。
   correction: Object.freeze({ enabled: false, windowRounds: 1 }),
   // 学习词典（UD-0055 / UD-0057）：识别完成后记录用户手改，形近替换自动生效。
   //   entries: { from, to, hits, at, enabled } —— 纯字面替换，⛔ 不碰纠错提示词。
@@ -4807,10 +4807,14 @@ function normalizeAutoEnhanceMode(v) {
   return typeof v === 'string' && VOICE_ENHANCE_MODES.indexOf(v) >= 0 ? v : '';
 }
 
-// 纠错参考窗口轮数归一（O4）：1–3 整数，其余（含 0 / 9 / null / 缺省）回落 1。
+// 纠错参考窗口轮数归一（O4；2026-11-17 扩档）：**0–5 整数**。
+//   · 0    = **无参考**（纠错照跑，但不读会话历史；提示词里 history 为空）
+//   · 1–5  = 参考最近 N 轮会话
+//   · 其余（负数 / 9 / null / 非整数 / 缺省）⇒ 回落**默认 1**（= 既有行为，不因扩档改变默认）
+//   ⚠ 0 是**合法值**（不是非法回落）：它对应 UI 上「无参考」这一档。
 function normalizeCorrectionWindowRounds(v) {
   const n = typeof v === 'number' ? v : NaN;
-  if (Number.isInteger(n) && n >= 1 && n <= 3) return n;
+  if (Number.isInteger(n) && n >= 0 && n <= 5) return n;
   return VOICE_CONFIG_DEFAULTS.correction.windowRounds;
 }
 
@@ -5000,11 +5004,18 @@ const { matchVoiceDictionary } = __load("src/shared/contracts/voice-config.cjs")
 
 const CORRECTION_WINDOW = [1, 1];
 
-// 纠错参考窗口：默认 [1,1]（最近 1 轮）。可经 voice.correction.windowRounds 配置为 1–3 轮。
-// 非法/缺省 ⇒ 回落默认；只改「读多少轮」，⛔ 不改 UD-0051「必须有会话参考」这条。
+// 纠错参考窗口：默认 [1,1]（最近 1 轮）。可经 voice.correction.windowRounds 配置为 **0–5**。
+//   · 0   ⇒ 返回 **[0,0]** = **无参考**：纠错照跑，但不读会话历史（调用方据此跳过 readSurface，
+//     提示词里 {history} 为空 —— correction.md 已写明「参考为空时仅依据草稿本身判断」）。
+//   · 1–5 ⇒ [1,N]。
+//   · 非法/缺省 ⇒ 回落 [1,1]。
+//   ⚠ 2026-11-17（用户需求 · 扩档）：`0` 从「非法回落」改为**合法档位**「无参考」。
+//     这是对 UD-0051「必须有会话参考」的**用户显式覆盖**（用户可在 UI 上主动选无参考）——
+//     默认仍是 1 轮，所以既有行为不变。
 function resolveCorrectionWindow(cfg) {
   const n = cfg && cfg.correction && cfg.correction.windowRounds;
-  if (!Number.isInteger(n) || n < 1 || n > 3) return CORRECTION_WINDOW;
+  if (!Number.isInteger(n) || n < 0 || n > 5) return CORRECTION_WINDOW;
+  if (n === 0) return [0, 0];
   return [1, n];
 }
 const CORRECTION_TIMEOUT_MS = 30000;
@@ -5062,6 +5073,12 @@ function createCorrectionRunner(deps) {
   const historyTimeoutMs = d.historyTimeoutMs;
 
   async function fetchCorrectionHistory(sessionId, config) {
+    // ⚠ 2026-11-17（扩档）：**先判窗口再读会话面** —— windowRounds=0（无参考）时
+    //   一次 readSurface 都不该发（省一次宿主查询，也让「无参考」的语义干净）。
+    if (resolveCorrectionWindow(config)[0] === 0) {
+      hlog('[correction] history none (windowRounds=0)');
+      return '';
+    }
     const sq = ctx && typeof ctx.get === 'function' ? ctx.get('sessionQuery') : null;
     if (!sq || typeof sq.readSurface !== 'function') {
       hlog('[correction] history skipped no-readSurface');
@@ -5073,6 +5090,7 @@ function createCorrectionRunner(deps) {
       if (waitAbort.timedOut()) { hlog('[correction] history timeout'); return ''; }
       const events = extractHistoryConclusions(surface && surface.events);
       const win = resolveCorrectionWindow(config);
+      // 窗口在**入口处**已判过一次（0 = 无参考直接空返回），此处必为 1–5。
       const lines = splitHistoryRounds(events, win[0], win[1]);
       const text = lines.join('\n');
       hlog('[correction] history rounds=' + win[0] + '-' + win[1] + ' events=' + events.length + ' chars=' + text.length);

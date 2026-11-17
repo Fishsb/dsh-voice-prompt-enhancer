@@ -120,19 +120,26 @@ test('HCR-05 产物内联执行域模块（无外部 require），RPC 仍由 chu
 });
 
 // ─────────── O4（2026-11-08 · 语音四件收口批）：纠错参考窗口可配 ───────────
-// 判据（用户拍板）：默认/非法一律回落 [1,1]；windowRounds=N（1–3）⇒ [1,N]。
-//   ⚠ 只改「读多少轮」，⛔ 不改 UD-0051「必须有会话参考」这条。
-test('HCR-06 ⭐resolveCorrectionWindow：默认/非法回落 [1,1]，1–3 取 [1,N]', () => {
+// 判据（用户拍板）：默认/非法一律回落 [1,1]；windowRounds=N ⇒ [1,N]。
+//   ⚠ 2026-11-17（用户需求 · 扩档）：范围从 1–3 扩到 **0–5**，其中 **0 = 无参考 ⇒ [0,0]**。
+//     `0` 此前是「非法回落 1」的一个样本，现在改为**合法档位**（用户可在 UI 选「无参考」）——
+//     本条把这一语义变更锁死，防止有人把 0 又塞回非法分支。
+test('HCR-06 ⭐resolveCorrectionWindow：默认/非法回落 [1,1]，0=[0,0] 无参考，1–5 取 [1,N]', () => {
   assert.deepEqual(resolveCorrectionWindow(undefined), [1, 1]);
   assert.deepEqual(resolveCorrectionWindow({}), [1, 1]);
   assert.deepEqual(resolveCorrectionWindow({ correction: {} }), [1, 1]);
   assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: null } }), [1, 1]);
-  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 0 } }), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 6 } }), [1, 1], '超上限 6 ⇒ 回落默认');
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: -1 } }), [1, 1], '负数 ⇒ 回落默认');
   assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 9 } }), [1, 1]);
-  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: '3' } }), [1, 1]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: '3' } }), [1, 1], '字符串不归一（只认数字）');
+  // ⭐ 扩档核心：0 = 无参考
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 0 } }), [0, 0], '0 必须是「无参考」[0,0]，不得回落 [1,1]');
   assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 1 } }), [1, 1]);
   assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 2 } }), [1, 2]);
   assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 3 } }), [1, 3]);
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 4 } }), [1, 4], '4 必须被接受（旧实现会回落 1）');
+  assert.deepEqual(resolveCorrectionWindow({ correction: { windowRounds: 5 } }), [1, 5], '5 必须被接受（旧实现会回落 1）');
   // 旧常量本身**不得被改**（HCR-01 的断言仍逐字成立）
   assert.deepEqual(CORRECTION_WINDOW, [1, 1]);
 });
@@ -158,6 +165,33 @@ test('HCR-07 ⭐fetchCorrectionHistory 用配置窗口读轮次，日志打实�
   assert.deepEqual(seen.at(-1), [1, 1], '无 config ⇒ [1,1]');
   await runner.fetchCorrectionHistory('s', { correction: { windowRounds: 9 } });
   assert.deepEqual(seen.at(-1), [1, 1], '非法 ⇒ [1,1]');
+  // ⭐ 2026-11-17（扩档）：4/5 也必须真的被用上（旧实现会把它们回落成 1）
+  await runner.fetchCorrectionHistory('s', { correction: { windowRounds: 4 } });
+  assert.deepEqual(seen.at(-1), [1, 4], 'windowRounds=4 ⇒ [1,4]');
+  await runner.fetchCorrectionHistory('s', { correction: { windowRounds: 5 } });
+  assert.deepEqual(seen.at(-1), [1, 5], 'windowRounds=5 ⇒ [1,5]');
+});
+
+test('HCR-07b ⭐「无参考」（windowRounds=0）必须**一次都不读会话面**，且历史为空', async () => {
+  // ⚠ 这是扩档新增档位的**核心行为**：0 不是「少读几轮」，而是「不读」。
+  //   若实现只在 splitHistoryRounds 里返空、仍去 readSurface，则「无参考」白白多一次宿主查询，
+  //   且日志会显示 rounds=0-0 这种自相矛盾的读数。
+  let surfaceReads = 0;
+  const seen = [];
+  const { deps, logs } = makeDeps({
+    ctx: {
+      get: () => ({ readSurface: () => { surfaceReads += 1; return Promise.resolve({ events: [{ role: 'user', text: 'a' }] }); } }),
+      timer: { timeout: () => () => {} },
+    },
+    extractHistoryConclusions: () => ['结论'],
+    splitHistoryRounds: (events, first, last) => { seen.push([first, last]); return ['line']; },
+  });
+  const runner = createCorrectionRunner(deps);
+  const out = await runner.fetchCorrectionHistory('s', { correction: { windowRounds: 0 } });
+  assert.equal(out, '', '无参考 ⇒ 历史文本必须是空串');
+  assert.equal(surfaceReads, 0, '无参考 ⇒ **不得调用 readSurface**（实得 ' + surfaceReads + ' 次）');
+  assert.equal(seen.length, 0, '无参考 ⇒ 不得进入 splitHistoryRounds');
+  assert.ok(logs.some((l) => l.includes('history none')), '须留下「无参考」日志（可观测）；实得 ' + JSON.stringify(logs));
 });
 
 // ⚠⚠ PE-15 / PE-05-G2 重写（2026-11-17 · 全功能审查）：原用例**正是那条假绿**。

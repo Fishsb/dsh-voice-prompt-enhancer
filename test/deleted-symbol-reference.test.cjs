@@ -75,7 +75,6 @@ test('DSR-01 最近一次提交不得"删定义留调用"（stallTailCv 病历�
   const [tip, parent] = commits;
   const files = (git(['diff', '--name-only', parent + '..' + tip]) || '')
     .split('\n').filter((f) => /\.(cjs|js)$/.test(f));
-  assert.ok(files.length >= 0, 'diff 列表必须可读');
   const stale = [];
   let checked = 0;
   for (const f of files) {
@@ -85,7 +84,16 @@ test('DSR-01 最近一次提交不得"删定义留调用"（stallTailCv 病历�
     checked += 1;
     for (const name of staleRefs(before, after)) stale.push({ file: f, name });
   }
-  assert.ok(checked > 0, '必须至少扫到 1 个被改动的 .cjs/.js（扫 0 件 ⇒ 判据无被测物，不得判绿）');
+  // ⚠ 2026-11-17 订正（本轮自查）：本断言原写「必须至少扫到 1 个被改动的 .cjs/.js」，
+  //   但**纯文档提交**（只改 CHANGELOG.md）本就该有 0 个代码文件 ⇒ 会把合法提交判红。
+  //   判据的真实意图是「**有候选却全被跳过**时不得静默判绿」，不是「每次提交都必须改代码」。
+  //   ⇒ 只在「候选 > 0 而实扫 = 0」时红；候选 = 0 时显式 SKIP 并说明。
+  if (files.length === 0) {
+    console.log('SKIP | DSR-01 | 最近一次提交未改动 .cjs/.js（纯文档提交）—— 本判据无被测物');
+    return;
+  }
+  assert.ok(checked > 0,
+    '有 ' + files.length + ' 个候选 .cjs/.js 但**一个都没扫成**（全是新增/删除文件？）⇒ 判据无被测物，不得判绿');
   assert.deepEqual(stale, [],
     '发现"已删除但仍被调用"的符号：' + JSON.stringify(stale) +
     ' —— 这类调用会抛 ReferenceError，且若被 try/catch 包住会**静默失效**（PE-39 病历）');

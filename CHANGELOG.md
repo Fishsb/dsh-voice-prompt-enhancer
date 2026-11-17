@@ -20,6 +20,14 @@
 
 ## [Unreleased]
 
+- **语音纠错参考扩档（2026-11-17 · 用户需求）—— 下拉 4 档 → 7 档 · [PE-F04]**：纠错参考轮数由「关 / 1–3 轮」扩为 **关 / 无参考 / 1–5 轮会话**，并把悬停提示从「只说范围」改为「说清用途」。
+  - **配置面**：`voice.correction.windowRounds` 合法区间 **1–3 → 0–5**（`lib/voice-config.cjs` 归一器）。**默认仍是 1**，既有行为不变。**`0` 从「非法回落 1」改为合法档位「无参考」**。
+  - **宿主面**（`src/host/domains/voice/correction.cjs`）：`resolveCorrectionWindow` 遇 `0` 返回 **`[0,0]`**；`fetchCorrectionHistory` 在**入口处**先判窗口 ⇒ 无参考时**一次 `readSurface` 都不发**（省一次宿主查询），历史文本为空串。`correction.md` 本就写明「参考为空时仅依据草稿本身判断」，故提示词无需改动。
+  - **界面面**：档位 `关 / 无参考 / 1轮会话 / 2轮会话 / 3轮会话 / 4轮会话 / 5轮会话`；`无参考` 写入 `enabled:true + windowRounds:0`（它**是开启纠错**，只是不读历史，⛔ 不是关）。i18n 新增 `voiceCorrectionWindowNone` / `voiceCorrectionWindowRounds`（整句式模板，避免 EN 单复数拼错），删除已无消费者的 `voiceCorrectionWindowUnit`；键数 294 → **295**（中英同增），`ui-freeze` 快照同步。
+  - **提示语**（`voiceCorrectionWindowTip`，中英同步）：说明参考**用途**（判断音近词是不是本项目/本会话里的专名或既有术语）、**只能阻止误改不能促成改动**、以及「无参考」的确切含义。原句「参考最近几轮会话（1–3 轮）」只给范围、看不出用途。
+  - **回归锁**：`HCR-06` 扩为锁 0–5 全区间（含 `0 ⇒ [0,0]`、`4/5` 必须被接受、`6/-1/字符串` 回落默认）；新增 **`HCR-07b`** 钉「无参考必须一次都不读会话面」——**变异自证**：删掉入口处那次判空 ⇒ 该用例真红。
+  - **顺带订正一条自家判据**：`DSR-01`（删定义留调用）原先要求「最近一次提交必须改动 .cjs/.js」，**纯文档提交会被误判红**；改为「有候选却全被跳过才红，候选为 0 显式 SKIP」。
+  **已实测**：`npm test` **1027/1027**；gate 七环 exit 0；`build-host/client --check` 双绿；`settings-layout-audit` exit 0（32 场景全达标）；已 `sync-runtime`（host 与 client 产物均含新语义，md5 与仓库一致）。⚠ **host 面改动需重启 DSH 生效**（客户端下拉刷新页面即可）。
 - **第二轮体检 · 真机复验批（2026-11-17 · 承 t6 失败报告，修 2 blocker + 1 low）—— 3 项 · [PE-F01/F04]**：
   **① [blocker] RT-02 413 修复对真实浏览器无效** —— 上一版是「`writeJson(413)` 后**立刻** `request.destroy()`」：对 curl（无 `Accept-Encoding`）有效，但**真实浏览器一律带 `Accept-Encoding: gzip`**，而宿主 web 套了 compression 中间件、**gzip 异步 flush** ⇒ 立刻 destroy 会毁掉尚未 flush 的压缩流与 socket ⇒ 浏览器只看到 0 字节 / `ERR_EMPTY_RESPONSE`（实测：旧形态 gzip → `ECONNRESET`，identity → 413 正常）⇒ **PE-12 要治的「契约码不可达」在浏览器形态下原样成立**。**修法**：把销毁挂到响应的 `finish`/`close` 事件上（**响应真正写完再销毁**），绝不在 finish 之前 destroy。**新增回归锁**：`test/rpc-guard.test.cjs` 的 RPCG-05 增一段「带 gzip 压缩时 413 仍须可达」，用宿主同款 compression 中间件（解析不到则回退 zlib 手写包装）复演浏览器形态；**变异自证**：把 destroy 换回旧形态 ⇒ 该断言真红。
   **② [low] RT-03 EN 状态行 `Filleron · Correcton`** —— `section.cjs` 把「名字」与「状态后缀」**字符串直接相加**：ZH 下「清口水词」+「已开启」恰好可拼，EN 下就是 `Filler` + `on`。另「1 entries」单复数未处理。**修法**：改用整句式模板键 `voiceStateOnTemplate`（`{name}已开启` / `{name} on`），词典条数改用 `voiceDictCountPrefixOne` 单数键；i18n 键数 292 → **294**（中英各 +2，两侧相等），`ui-freeze` 快照同步重生成。

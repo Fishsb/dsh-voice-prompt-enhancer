@@ -18,7 +18,7 @@ test('CI18N-01 旧 i18n chunk 退役，普通模块与测试单一入口在位',
 // ⚠ PE-41 修复（2026-11-17 · 全功能审查 low）：标题须与下方断言**同值**。
 //   ⚠ 第二轮体检订正：本标题曾改成「341 键」，随后 PE-38 删了 49 键使断言变 292，标题没跟着改 ⇒
 //     同类问题（标题与断言不一致）在**修完的下一轮立刻复发**。现由 292 同步锁定。
-test('CI18N-02 ZH/EN 顶层键集完全相等且保持 294 键', () => {
+test('CI18N-02 ZH/EN 顶层键集完全相等且保持 295 键', () => {
   // 2026-11-08（语音四件收口批）：299 → **305**（+6 键，逐项可归因：`voiceAutoEnhanceModeLabel` /
   //   `voiceAutoEnhanceModeTip` / `voiceAutoEnhanceModeFollow` / `voiceCorrectionWindowLabel` /
   //   `voiceCorrectionWindowTip` / `voiceCorrectionWindowUnit`；中英各加 6，两侧仍相等）。
@@ -47,14 +47,16 @@ test('CI18N-02 ZH/EN 顶层键集完全相等且保持 294 键', () => {
   // 2026-11-17（PE-32 修复）：333 → **340**（+7 键：voiceStateOnSuffix / voiceDictCountPrefix /
   //   voiceAgoJustNow / voiceAgoMinutes / voiceAgoHours / voiceAgoDays / voiceAgoSuffix ——
   //   EN 界面曾泄漏「已开启」「 条 · 」「N 天前」；中英各加 7，两侧仍相等）。
+  // 2026-11-17（用户需求 · 纠错扩档）：294 → **295**（+2 −1：新增 `voiceCorrectionWindowNone` 与
+  //   `voiceCorrectionWindowRounds`（中英各 1），删除已无消费者的 `voiceCorrectionWindowUnit`（中英各 1））。
   // 2026-11-17（RT-03 · 第二轮体检）：292 → **294**（+2 键，可归因：`voiceStateOnTemplate`（中英各 1）
   //   —— 修 EN 状态行 `Filleron`；`voiceDictCountPrefixOne`（中英各 1）—— 修 `1 entries` 单复数）。
   // 2026-11-17（PE-38 清理 · 全功能审查）：341 → **292**（-49 键，逐族可归因：
   //   `upd*` 30 / `env*` 18 / `pluginsSwitch` 1 —— updater 子系统与插件版本切换 UI 已整体退役，
   //   运行时消费面（src/client + lib/client.cjs）实测**零引用**、且无 `'upd'+` / `'env'+` 动态拼接）。
   //   ⚠ 保留 `stage*` 17 键：它们由 `button.cjs:231/237` **动态拼接**消费，静态扫描会误判。
-  assert.equal(zhKeys.length, 294);
-  assert.equal(enKeys.length, 294);
+  assert.equal(zhKeys.length, 295);
+  assert.equal(enKeys.length, 295);
   assert.deepEqual(zhKeys, enKeys);
 });
 
