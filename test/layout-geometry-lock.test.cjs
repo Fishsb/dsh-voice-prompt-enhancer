@@ -246,14 +246,32 @@ test('GEOLOCK-08 学习词典 = 双集合（⛔ 不得退回逐条启停按钮�
   assert.ok(/toggleAt\(i, \{ enabled: true \}\)/.test(s), '移回必须走 toggleAt（立即落配置），不得走只置草稿的路径');
   assert.ok(/toggleAt\(i, \{ enabled: false \}\)/.test(s), '移出必须走 toggleAt（立即落配置），不得走只置草稿的路径');
   {
-    const idx = s.indexOf('const toggleAt');
-    assert.ok(idx >= 0, '必须存在 toggleAt（移组/开关类动作的立即提交入口）');
-    const tail = s.slice(idx, idx + 600);
-    assert.ok(/commit\(/.test(tail), 'toggleAt 内必须调用 commit() —— 否则按钮点了不写配置（F04-1 的形态）');
-    const didx = s.indexOf('const patchDraftAt');
-    assert.ok(didx >= 0, '必须存在 patchDraftAt（文本输入的延迟提交入口）');
-    const dtail = s.slice(didx, didx + 400);
-    assert.equal(/commit\(/.test(dtail), false, 'patchDraftAt 内不得 commit —— 否则 PE-20 的「输入中途不归一」失效');
+    // ⚠⚠ 2026-11-17 第二轮体检**修无牙断言**：上一版用固定长度窗口 `s.slice(idx, idx+600)`，
+    //   而该窗口**越过了 toggleAt 的闭合花括号**、把紧随其后的 `removeAt` / `addOne` 也纳进来 ——
+    //   那两个函数本来就有 `commit(` ⇒ **把 toggleAt 改成只置草稿（正是 F04-1 的缺陷形态）断言仍全绿**
+    //   （reviewer 实测 26 pass / 0 fail）。⇒ 必须按**函数体边界**取，不能用固定长度。
+    const bodyOf = (src, decl) => {
+      const i = src.indexOf(decl);
+      if (i < 0) return null;
+      const open = src.indexOf('{', i);
+      if (open < 0) return null;
+      let depth = 0;
+      for (let k = open; k < src.length; k++) {
+        if (src[k] === '{') depth++;
+        else if (src[k] === '}') { depth--; if (depth === 0) return src.slice(i, k + 1); }
+      }
+      return null;
+    };
+    const toggleBody = bodyOf(s, 'const toggleAt');
+    assert.ok(toggleBody !== null, '必须能按花括号配平取出 toggleAt 的函数体（取不到 ⇒ 判据无被测物，不得静默通过）');
+    assert.ok(/commit\(/.test(toggleBody), 'toggleAt **函数体内**必须调用 commit() —— 否则按钮点了不写配置（F04-1 的形态）');
+    // 负控：函数体不得把 commit 只写在注释里（注释里出现 commit( 不算实现）
+    const toggleCode = toggleBody.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.ok(/commit\(/.test(toggleCode), 'toggleAt 的 commit() 必须是**真实代码**，不得只在注释里出现');
+    const draftBody = bodyOf(s, 'const patchDraftAt');
+    assert.ok(draftBody !== null, '必须能按花括号配平取出 patchDraftAt 的函数体');
+    const draftCode = draftBody.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.equal(/commit\(/.test(draftCode), false, 'patchDraftAt **函数体内**（去注释后）不得 commit —— 否则 PE-20 的「输入中途不归一」失效');
   }
   // ④ ⛔ 不得退回每行一个启停开关（旧形态：aria-pressed + voiceDictEnable/Disable 作按钮文本）
   assert.equal(/'aria-pressed'/.test(s), false, '⛔ 词条不得再有 aria-pressed 启停按钮（旧结构）');
