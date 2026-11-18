@@ -120,8 +120,20 @@ function hotkeyInput(nodes) {
   return el;
 }
 
-const keyEvent = (code, mods) => Object.assign({
-  code, key: code, preventDefault() {}, stopPropagation() {},
+// ⚠ 真实键盘事件里修饰键的 code 是**带左右后缀**的（AltLeft / ControlRight …），
+//   而 key 是短名（Alt / Control …）。夹具必须照这个真实形态构造，否则测不出本次故障。
+const MODIFIER_EVENTS = [
+  { code: 'AltLeft', key: 'Alt', mods: { altKey: true } },
+  { code: 'AltRight', key: 'Alt', mods: { altKey: true } },
+  { code: 'ControlLeft', key: 'Control', mods: { ctrlKey: true } },
+  { code: 'ControlRight', key: 'Control', mods: { ctrlKey: true } },
+  { code: 'ShiftLeft', key: 'Shift', mods: { shiftKey: true } },
+  { code: 'ShiftRight', key: 'Shift', mods: { shiftKey: true } },
+  { code: 'MetaLeft', key: 'Meta', mods: { metaKey: true } },
+  { code: 'MetaRight', key: 'Meta', mods: { metaKey: true } },
+];
+const keyEvent = (code, mods, key) => Object.assign({
+  code, key: typeof key === 'string' ? key : code, preventDefault() {}, stopPropagation() {},
 }, mods || {});
 
 test('HKUI-1 聚焦后进入录制态：全局位 = true，且输入框显示「请按组合键…」', () => {
@@ -150,15 +162,31 @@ test('HKUI-2 按组合键必须写入配置，且修饰键顺序固定为 Ctrl/A
     '四修饰键顺序必须是 Ctrl+Alt+Shift+Meta（与 handler 的 push 顺序一致）；实得 ' + r2.saves[0].hotkey.combo);
 });
 
-test('HKUI-3 纯修饰键按下不得写配置（必须等主键）', () => {
+test('HKUI-3 纯修饰键按下不得写配置（必须等主键）—— 含真实 code 形态', () => {
+  // ⚠⚠ 这条是本次故障的核心判据：旧实现拿 `e.code` 比 `'Alt'`，而真实 code 是 `'AltLeft'`
+  //   ⇒ 恒不命中 ⇒ 按住 Alt 就被当主键，立刻写入 `Alt+AltLeft`。
+  //   ⇒ 必须用**真实的 code/key 组合**逐项验（八个左右变体全覆盖）。
+  for (const ev of MODIFIER_EVENTS) {
+    const r = renderVoiceSection();
+    const el = hotkeyInput(r.nodes);
+    el.props.onFocus();
+    el.props.onKeyDown(keyEvent(ev.code, ev.mods, ev.key));
+    assert.equal(r.saves.length, 0,
+      '按住 ' + ev.code + '（key=' + ev.key + '）不得写入配置 —— 它只是修饰键，须等主键（实得 '
+      + r.saves.length + ' 次，combo=' + JSON.stringify((r.saves[0] || {}).hotkey) + '）');
+    assert.equal(r.fakeWindow.__voiceHotkeyCapturing, true, ev.code + ' 后仍在等待主键 ⇒ 录制态必须保持');
+  }
+});
+
+test('HKUI-3b 修饰键 + 主键 ⇒ 正常写入（证明不是「把所有键都拦掉」）', () => {
   const r = renderVoiceSection();
   const el = hotkeyInput(r.nodes);
   el.props.onFocus();
-  for (const c of ['Control', 'Alt', 'Shift', 'Meta']) {
-    el.props.onKeyDown(keyEvent(c, { ctrlKey: c === 'Control' }));
-  }
-  assert.equal(r.saves.length, 0, '纯修饰键不得写入配置（实得 ' + r.saves.length + ' 次）');
-  assert.equal(r.fakeWindow.__voiceHotkeyCapturing, true, '仍在等待主键 ⇒ 录制态必须保持');
+  el.props.onKeyDown(keyEvent('AltLeft', { altKey: true }, 'Alt'));
+  assert.equal(r.saves.length, 0, '前置：单按 Alt 不写入');
+  el.props.onKeyDown(keyEvent('KeyA', { altKey: true }, 'a'));
+  assert.equal(r.saves.length, 1, 'Alt+KeyA 必须写入一次');
+  assert.equal(r.saves[0].hotkey.combo, 'Alt+KeyA', 'combo 必须是 Alt+KeyA；实得 ' + r.saves[0].hotkey.combo);
 });
 
 test('HKUI-4 写入后必须退出录制态（全局位复位 + 焦点移走）', () => {

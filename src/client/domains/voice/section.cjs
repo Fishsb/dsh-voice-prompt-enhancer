@@ -500,11 +500,23 @@ function VoiceSection(props) {
       if (captureWindow) captureWindow.__voiceHotkeyCapturing = false;
     };
   }, []);
+  // ⚠⚠⚠ 2026-11-18 修复（用户报「按住 Alt 还没按第二个键就输入完成了」· 真根因）：
+  //   **修饰键判据不得拿 `e.code` 比短名**。`KeyboardEvent.code` 对修饰键的真实值是
+  //   `AltLeft`/`AltRight`/`ControlLeft`/`ControlRight`/`ShiftLeft`/`ShiftRight`/`MetaLeft`/`MetaRight`
+  //   （规范如此，与键盘布局无关）；旧写法 `['Control','Alt','Shift','Meta'].indexOf(e.code)`
+  //   **在任何现代浏览器上恒不命中** ⇒ 按下 Alt 就被当成「主键」⇒ 立刻写入 `Alt+AltLeft`。
+  //   ⇒ 双判据：`e.key` 的修饰名（Control/Alt/Shift/Meta/OS/AltGraph）+ `e.code` 的左右后缀形态。
+  //   ⚠ 不用 `e.keyCode`：已废弃，且不同平台对 Meta 的取值不一致。
+  const isModifierKey = (e) => {
+    const key = typeof e.key === 'string' ? e.key : '';
+    if (key === 'Control' || key === 'Alt' || key === 'Shift' || key === 'Meta' || key === 'OS' || key === 'AltGraph') return true;
+    const code = typeof e.code === 'string' ? e.code : '';
+    return /^(Control|Alt|Shift|Meta)(Left|Right)$/.test(code);
+  };
   const onHotkeyKeyDown = (e) => {
     e.preventDefault(); e.stopPropagation();
     if (e.key === 'Escape') { cancelHotkeyCapture(); return; }
-    const mods = ['Control', 'Alt', 'Shift', 'Meta'];
-    if (mods.indexOf(e.code) >= 0) return; // 纯修饰键按下：等待主键
+    if (isModifierKey(e)) return; // 纯修饰键按下：等待主键
     const parts = [];
     if (e.ctrlKey) parts.push('Ctrl');
     if (e.altKey) parts.push('Alt');

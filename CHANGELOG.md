@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+- **修复（续）：热键录制「按住 Alt 就立刻完成」（2026-11-18 · 用户复报，症状精确到按键）—— 修饰键判据用错了事件字段 · [PE-F04]**：点输入框能进「请按组合键…」，但**一按 Alt（还没按第二个键）就写入完成**。
+  - **根因**：`onHotkeyKeyDown` 的修饰键判据是 `['Control','Alt','Shift','Meta'].indexOf(e.code) >= 0`。`KeyboardEvent.code` 对修饰键的真实值是 **`AltLeft`/`AltRight`/`ControlLeft`/`ControlRight`/`ShiftLeft`/`ShiftRight`/`MetaLeft`/`MetaRight`**（规范如此、与键盘布局无关），**短名 `'Alt'` 永远匹配不上** ⇒ 修饰键被当成「主键」⇒ 立刻写入 `Alt+AltLeft`。
+  - **为什么「以前好像能用」**：该行自最初的 `domains/` 分层重构（`bdbfdcce8`）起就是这个形态，判据**一直没生效**；用户此前没在带修饰键的组合上踩到，本轮回报时才暴露。
+  - **修法**：双判据 `isModifierKey(e)` —— ① `e.key` 的修饰名（`Control`/`Alt`/`Shift`/`Meta`/`OS`/`AltGraph`）；② `e.code` 的左右后缀形态 `/^(Control|Alt|Shift|Meta)(Left|Right)$/`。⛔ 不用已废弃的 `e.keyCode`（各平台对 Meta 取值不一致）。
+  - **回归锁升级**：`HKUI-3` 改为用**真实 code/key 组合**逐项验八个左右变体（`AltLeft`/`AltRight`/`ControlLeft`/`ControlRight`/`ShiftLeft`/`ShiftRight`/`MetaLeft`/`MetaRight`）——旧夹具用 `code='Alt'` 这种短名，正是它让本缺陷漏过；新增 `HKUI-3b`「修饰键 + 主键 ⇒ 正常写入」负控，防把判据改成「把所有键都拦掉」。**变异自证**：把判据换回 `mods.indexOf(e.code)` ⇒ `HKUI-3` 与 `HKUI-3b` 双双真红。
+  **已实测**：`npm test` **1042/1042**；gate 七环 exit 0；`build --check` 双绿；`sync-runtime` 已部署（`isModifierKey` 在产物中，md5 与仓库一致）。⚠ 仅客户端改动 ⇒ 浏览器 Ctrl+F5 即可。
 - **修复：热键组合键「不能设置了」（2026-11-18 · 用户报障）—— 录制位写在 null/undefined 的 window 上 · [PE-F04]**：点热键输入框无反应、按组合键不写入；**清除热键后又能改**。
   - **根因**：`section.cjs` 与 `hotkey.cjs` 都有 `const window = d.window`（遮蔽全局）。`d.window` 为 `null`/`undefined` 时，旧判空 `typeof window !== 'undefined'` **对 null 也为真**（`typeof null === 'object'`）⇒ `window.__voiceHotkeyCapturing = true` 抛 `TypeError`；该异常发生在 `onFocus` 内、**早于 `setHotkeyCapture(true)`** ⇒ 录制态永远进不去。同时 `hotkey.cjs` 的全局 keydown/keyup 每次按键都抛错。
   - **为什么「清除后又能改」**：没有配置热键时不装全局监听，`hotkey.cjs` 那段不会执行；一旦配了热键，全局监听（capture 阶段 + `stopPropagation`）就会把按键吃掉，而它本该因录制位让路——但录制位根本没写成功。
