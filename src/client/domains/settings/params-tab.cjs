@@ -159,9 +159,11 @@ function ParamsTab(props) {
         className: 'dsh-plg-select',
         value: String(cfg.context.budgetChars),
         onChange: (e) => save({ context: { ...cfg.context, budgetChars: Number(e.target.value) } }),
-        children: (MODE_BUDGET_OPTIONS[cfg.mode] || MODE_BUDGET_OPTIONS.base).map((v, i, arr) =>
+        // D3（2026-11-22）：预算档位按**真实字符数**呈现（不再用「无限制」标签——记忆链另有 2400 上限）；
+        //   语义解释由下方 cfgContextNote 承担（0 = 不带参考；数值越大检索越广）。
+        children: (MODE_BUDGET_OPTIONS[cfg.mode] || MODE_BUDGET_OPTIONS.base).map((v) =>
           React.createElement('option', { key: String(v), value: String(v) },
-            v === 0 ? t('cfgContextBudget0') : (i === arr.length - 1 ? t('cfgUnlimited') : String(v)))),
+            v === 0 ? t('cfgContextBudget0') : String(v))),
       }),
     ),
     React.createElement('p', { id: ids.budgetHint, className: 'dsh-plg-hint' }, t('cfgContextNote')),

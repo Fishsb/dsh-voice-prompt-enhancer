@@ -149,6 +149,20 @@ test('VDICT-06b 生效计数：模型实际改对才 +1，改动不彻底不计'
   assert.deepEqual(e, snapshot, '不得修改入参');
 });
 
+test('VDICT-06c 生效计数只对本次进过提示词的条目 +1（D1 · 2026-11-22）', () => {
+  const entries = [
+    { from: '绘画', to: '会话', hits: 0, at: 1, enabled: true },
+    { from: '绘制', to: '会话', hits: 5, at: 2, enabled: true },
+  ];
+  const out = recordVoiceDictionaryHits('绘画和绘制都要', '会话和会话都要', entries, 900, [{ from: '绘画', to: '会话' }]);
+  assert.equal(out.find((x) => x.from === '绘画').hits, 1, '进过提示词且模型改对 ⇒ +1');
+  assert.equal(out.find((x) => x.from === '绘制').hits, 5, '未进提示词 ⇒ 不得 +1（不许虚高）');
+  assert.equal(out.length, 2, '必须返回完整词条清单（只返回命中者会让落盘丢词条）');
+  // 负控：不传白名单 ⇒ 保持既有语义（两条都按字面判据计数）
+  const legacy = recordVoiceDictionaryHits('绘画和绘制都要', '会话和会话都要', entries, 900);
+  assert.equal(legacy.find((x) => x.from === '绘制').hits, 6, '旧口径仍须可用（向后兼容）');
+});
+
 // ── ⑦ 采集：机器输出 → 用户手改 的差异学习 ───────────────────────────────────
 test('VDICT-07 差异学习：换词入库、纯插入/纯删除不入库、超长不入库', () => {
   const learned = learnVoiceDictionaryDiff('这个功能很好', '这个特性很好');

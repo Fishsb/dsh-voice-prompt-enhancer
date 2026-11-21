@@ -4910,15 +4910,27 @@ function matchVoiceDictionary(text, entries) {
 // 生效计数（用户 2026-11-13 拍板）：**模型实际改对了才计**。
 // 判据（保守、纯字面）：原文含 from、结果含 to、且结果已不再含 from ⇒ 视为这一次改对了。
 //   ⚠ 只用于「命中」列的显示与淘汰排序，**不参与**任何替换决策。
+// allowedFrom（可选，D1 · 2026-11-22）：只允许对「本次确实进了提示词」的条目计数。
+//   不传 ⇒ 保持既有语义（对全部条目按字面判据计数）；传数组（字符串或 {from}）⇒ 仅白名单内条目可 +1。
+//   归一后仍返回**完整**词条清单（不是只返回命中者），调用方可直接落盘。
 // 返回新数组（不改入参）；未生效的条目原样保留。
-function recordVoiceDictionaryHits(originalText, resultText, entries, now) {
+function recordVoiceDictionaryHits(originalText, resultText, entries, now, allowedFrom) {
   const before = typeof originalText === 'string' ? originalText : '';
   const after = typeof resultText === 'string' ? resultText : '';
   const list = normalizeDictionaryEntries(entries);
   if (!before || !after || before === after) return list;
+  let allow = null;
+  if (Array.isArray(allowedFrom)) {
+    allow = new Set();
+    for (const it of allowedFrom) {
+      const f = typeof it === 'string' ? it : (it && typeof it.from === 'string' ? it.from : '');
+      if (f) allow.add(f);
+    }
+  }
   const at = typeof now === 'number' && isFinite(now) && now > 0 ? now : Date.now();
   return list.map((e) => {
     if (e.enabled !== true) return e;
+    if (allow !== null && !allow.has(e.from)) return e;  // 未进本次提示词 ⇒ 不计（不许虚高）
     if (before.indexOf(e.from) === -1) return e;      // 原文没出现 ⇒ 谈不上本词生效
     if (after.indexOf(e.to) === -1) return e;         // 结果没有目标写法 ⇒ 没改成
     if (after.indexOf(e.from) !== -1) return e;       // 原来的写法还在 ⇒ 只算部分/未改

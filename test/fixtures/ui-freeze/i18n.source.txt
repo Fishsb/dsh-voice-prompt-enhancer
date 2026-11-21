@@ -150,7 +150,7 @@ const ZH = {
   cfgUnlimited: '无限制',
   cfgParamsModeDefault: '本模式默认：超时 {t} · 回复上限 {k} 词元 · 文字上限 {o} 字',
   // v3.1.8（预算真正生效·每模式独立档位）：说明各模式档位范围与「预算越大注入越多」语义
-  cfgContextNote: '上下文预算决定能带多少参考资料：0 表示不带；数值越大，能检索的会话和文档越多。',
+  cfgContextNote: '上下文预算决定能带多少参考资料：0 表示不带；数值越大，能检索的会话和文档越多（记忆链另有 2400 字上限，与档位无关）。',
   // v2.3（§7.2/§7.3）：模式短标签 + 步骤进度文案 + 记忆开关
   modeShortBase: '基础',
   modeShortLite: '轻量',
@@ -510,7 +510,7 @@ const EN = {
   cfgUnlimited: 'Unlimited',
   cfgParamsModeDefault: 'mode defaults: timeout {t} · reply limit {k} tokens · text limit {o} chars',
   // v3.1.8（预算真正生效·每模式独立档位）：说明各模式档位范围与「预算越大注入越多」语义
-  cfgContextNote: 'Context budget sets how much reference is attached: 0 = none; higher = more sessions and files searched.',
+  cfgContextNote: 'Context budget sets how much reference is attached: 0 = none; higher = more sessions and files searched (the memory chain has its own 2400-character cap, independent of the level).',
   // v2.3（§7.2/§7.3）：模式短标签 + 步骤进度文案 + 记忆开关
   modeShortBase: 'Basic',
   modeShortLite: 'Lite',

@@ -196,3 +196,34 @@ test('CMSC-06 布局审计从共享语音契约注入默认值，不再漏定义
   assert.ok(driver.includes("createVoiceState({ host: host, storage: storage"));
   assert.ok(driver.includes("stateFactory(host, localStorageStub, null, null, __VOICE_CONFIG_DEFAULTS__)"));
 });
+
+test('CMSC-07 行内测速把当前思考档传给 models/test（D2 · 2026-11-22）', async () => {
+  const deps = createDeps();
+  deps.FallbackRow = fallbackModule.createFallbackRow(deps);
+  const ModelMainSection = mainModule.createModelMainSection(deps);
+  const baseProps = {
+    t: (key) => key,
+    providers: [{ provider: 'p1', name: 'P1', models: [{ id: 'm1', name: 'M1' }] }],
+    candidates: [{ provider: 'p1', model: 'm1' }],
+    saveFallback() {},
+  };
+  const onTree = ModelMainSection({
+    ...baseProps,
+    fallback: [{ provider: 'p1', model: 'm1', reasoning: { enabled: true, effort: 'high' } }],
+  });
+  const rows = onTree.children[0].children[0];
+  await rows[0].props.onTest();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const call = deps.calls.find((c) => c.method === 'models/test');
+  assert.ok(call, '必须触发 models/test');
+  assert.equal(call.args.reasoningEffort, 'high', '开启思考 ⇒ 测速必须带 effort（否则估时系统性偏低）');
+
+  // 负控：未开思考的行不得带该字段（host 会走平台默认档）
+  deps.calls.length = 0;
+  const offTree = ModelMainSection({ ...baseProps, fallback: [{ provider: 'p1', model: 'm1' }] });
+  await offTree.children[0].children[0][0].props.onTest();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const offCall = deps.calls.find((c) => c.method === 'models/test');
+  assert.ok(offCall, '必须触发 models/test');
+  assert.equal('reasoningEffort' in offCall.args, false, '未开思考 ⇒ 不得发送 reasoningEffort');
+});

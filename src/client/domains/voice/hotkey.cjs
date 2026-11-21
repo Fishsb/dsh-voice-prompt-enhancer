@@ -327,7 +327,7 @@ function VoiceHotkeyHost(props) {
             try {
               const sent = Array.isArray(r.dictionaryHits) ? r.dictionaryHits : [];
               if (sent.length > 0) {
-                const next = recordVoiceDictionaryHitsFn(cur, r.text, dictionaryEntries(), Date.now());
+                const next = recordVoiceDictionaryHitsFn(cur, r.text, dictionaryEntries(), Date.now(), sent);
                 if (JSON.stringify(next) !== JSON.stringify(dictionaryEntries())) {
                   saveVoiceCfg({ dictionary: { entries: next } });
                 }

@@ -105,8 +105,11 @@ function ModelMainSection(props) {
     const inputChars = (getLastDraft() || '').length;
     setTestState({ key, index, entry, phase: 'testing', result: null, live: null, hist: { loading: true } });
 
-    // 实测：本次测试测量
-    host.call(RPC_METHODS.MODELS_TEST, { provider: entry.provider, model: entry.model, inputChars }).then((res) => {
+    // 实测：本次测试测量（D2 · 2026-11-22：带上思考档，避免开思考的模型估时系统性偏低）
+    const effort = entry.reasoning && entry.reasoning.enabled === true
+      && typeof entry.reasoning.effort === 'string' && entry.reasoning.effort !== ''
+      ? entry.reasoning.effort : undefined;
+    host.call(RPC_METHODS.MODELS_TEST, { provider: entry.provider, model: entry.model, inputChars, ...(effort ? { reasoningEffort: effort } : {}) }).then((res) => {
       const r = res && typeof res === 'object' ? res : {};
       setTestState((prev) => (prev && prev.key === key
         ? {
