@@ -3492,6 +3492,15 @@ test('OVB-UNF-V02 变异自证·D2 必红：相位真值退回 snapshot().record
     '⚠ D2 退回的**特征读数**：未识别态被误判为「正在录」⇒ 反而派发 1 次**停止**（正是现场「不能继续识别」）');
 });
 
+test('OVB-CLEAN-01 VAD 死判据与错注释不得复活（2026-11-22 批1 清理回归锁）', () => {
+  const src = fs.readFileSync(path.join(ROOT, CHUNK), 'utf8');
+  assert.equal(/OVB_FLOOR_RISE\b/.test(src), false, 'OVB_FLOOR_RISE 执行面零引用，已删除，不得复活');
+  assert.equal(/OVB_FLOOR_STALL_FRAMES\b/.test(src), false, 'OVB_FLOOR_STALL_FRAMES 已删除（现行判据=占比+尾段 CV）');
+  assert.equal(/floorStall/.test(src), false, 'floorStall 只写不读，已删除');
+  assert.equal(/floorDb \+ 6 dB/.test(src), false, '底噪上界注释不得回退成「+6 dB」');
+  assert.equal(/Math\.pow\(10, \(fdb - 5\) \/ 20\)/.test(src), true, '底噪上界实值必须仍是 −5 dB 反解（≈ p95）');
+});
+
 test('OVB-UNF-V03 变异自证·负控必绿：两处变异下，正常「点按开始 / 长按松开即停」行为不变', () => {
   for (const kind of ['no-reset', 'wrong-phase-source']) {
     const h = buildMutatedHost(kind, { sessionId: 'sess-unf-v3' + kind });

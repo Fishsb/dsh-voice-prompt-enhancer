@@ -20,6 +20,9 @@
 
 ## [Unreleased]
 
+- **梳理结果整理优化 · 批 3：P3 债卡与机检锁（2026-11-22 · 仅测试与治理文档）· [PE-F01/PE-F02/PE-F04]**：① 新建技术债卡 `docs/internal/技术债卡-梳理漂移12条-2026-11-22.md`：附录 A 的 12 条全部关闭（10 条修复 + 2 条经决策保持并写明），逐条带位置/处置/回归锁/证据，并列出「未关闭」项（U01–U24 真机项、部署复验、仓库外消费者、D4 长期口径）；② 新增 2 条机检锁防复发：`OVB-CLEAN-01`（`OVB_FLOOR_RISE`/`OVB_FLOOR_STALL_FRAMES`/`floorStall` 不得复活、`floorDb + 6 dB` 错注释不得回退、底噪上界实值仍须 `Math.pow(10,(fdb-5)/20)`）、`CI18N-06`（`cfgHint` 必须含 DSH 配置目录、`cfgContextNote` 必须含 2400、standard 不得写「不额外调用模型」、lite 必须写最近 1 轮会话，并锁 ZH/EN 键数平衡）；③ 治理对账：README/README.en/AGENTS/compatibility 已无「1–3 轮 / 三写入点 / 5 槽位」残留（grep 实测空）。
+  - **已实测**：定向 168/168 pass（含 4 条新/既有锁）；全量 `npm test` **1051/1051 pass / 0 fail**（86.1s，较批 2 增 2 条）；`build-host --check` / `build-client --check` 双绿（本批未改 `src/**`）；`npm run gate --accept-unjudged=arch-claims,cards` **PASS 5 / FAIL 0 / SKIP 2**（退出码 0 来自基线接纳，非全判通过）。**未做**：P2 真机/部署验证（见债卡 §3）。
+
 - **梳理结果整理优化 · 批 2：D1–D4 决策项落地（2026-11-22 · 按方案推荐口径）· [PE-F01/PE-F02/PE-F04]**：① **D1 词典 hits 只计真参与项**——`recordVoiceDictionaryHits` 新增可选白名单参数（传数组时仅白名单内条目可 +1，仍返回完整清单避免落盘丢词条），`hotkey.cjs` 把 host 回传的 `dictionaryHits` 原样传入 ⇒ 未进 top-12 的词条不再虚高；② **D2 行内测速带思考档**——`models/test` 请求新增 `reasoningEffort`（取该行 `reasoning.enabled=true` 的 `effort`，未开思考不发送）⇒ 开思考模型的估时不再系统性偏低；③ **D3 预算标签去「无限制」**——上下文预算下拉按真实字符数显示，`cfgContextNote` 中英注明「记忆链另有 2400 字上限，与档位无关」（不加键，键数仍 294）；④ **D4 参数全局单份**——在整体梳理 §2.4 写明 `params/context` 不按模式独立、切模式写入目标模式默认档（纯文档口径，行为未改）。
   - **已实测**：D1/D2 定向 `voice-dictionary` + `client-model-settings-components-module` 等 **46/46 pass**（新增 VDICT-06c 白名单正/负控、CMSC-07 传档正/负控）；全量 `npm test` **1049/1049 pass / 0 fail**（85.7s）；`build-host --check` / `build-client --check` 双绿 —— ⚠ `lib/voice-config.cjs` 被 host 产物内联，D1 后**必须同步重建 `plugin-host.js`**（本次已重建 394191 B）；`npm run gate --accept-unjudged=arch-claims,cards` **PASS 5 / FAIL 0 / SKIP 2**（退出码 0 来自基线接纳，非全判通过）；i18n 294/294 差集空；`ui-freeze` 快照重生成（41174 → 41304 B）。**未做**：P2 真机验证补齐（U01–U24）与 P3 债卡/机检锁——见方案后续批。
 

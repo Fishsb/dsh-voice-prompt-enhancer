@@ -85,6 +85,19 @@ test('CI18N-04 共享运行时聚合文案模块，产物不再装载旧 chunk',
   assert.equal((client.match(/require\(['"]\.\.?\//g) || []).length, 0);
 });
 
+test('CI18N-06 已纠偏文案不得回退（2026-11-22 批1/批2 文案-契约锁）', () => {
+  assert.match(ZH.cfgHint, /DSH 配置目录/, '设置说明必须写明磁盘双写，不得退回「只存浏览器」');
+  assert.match(EN.cfgHint, /DSH config directory/);
+  assert.match(ZH.cfgContextNote, /2400/, '预算说明必须写明记忆链 2400 上限（D3）');
+  assert.match(EN.cfgContextNote, /2400/);
+  assert.match(ZH.cfgModeHintStandard, /调用模型/, 'standard 逐窗口判定会调用模型，不得写「不额外调用模型」');
+  assert.equal(/不额外调用模型/.test(ZH.cfgModeHintStandard), false);
+  assert.equal(/no extra model call/i.test(EN.cfgModeHintStandard), false);
+  assert.match(ZH.cfgModeHintLite, /最近 1 轮会话/);
+  assert.match(EN.cfgModeHintLite, /latest conversation round/);
+  assert.equal(Object.keys(ZH).length, Object.keys(EN).length, '文案锁不改变键数平衡');
+});
+
 test('CI18N-05 构建后 ZH/EN 仍从共享运行时同名解构', () => {
   const client = fs.readFileSync(path.join(REPO_ROOT, 'lib/client.cjs'), 'utf8');
   assert.ok(client.includes('ZH: i18n.ZH'));
