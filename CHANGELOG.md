@@ -20,6 +20,7 @@
 
 ## [Unreleased]
 
+- **部署与复验：批 1+2 已进运行环境（2026-11-22 · web / pe-test · [PE-F01/F02/F04]）**：`sync-runtime` 部署 3 目录（web 新名/旧名、pe-test），`lib/client.cjs` 与 `plugin-host.js` md5 与仓库逐字节一致，账本记 `web@3.5.1`/`pe-test@3.5.1`。**重启 DSH 后复验**：页面同源 `config/get` 返回 11 顶层键（version=2）；`enhance-verify` **6/6 PASS**（真实模型 `d1api/deepseek-v4.1-flash-1017`，含增强写回与撤回）；设置页实测 **D3 预算标签为 0/2000/4000/8000/16000（无「无限制」）**、提示含「记忆链 2400 字上限」、`cfgHint` 含「DSH 配置目录」。**未验证**：D1 词典 hits 与 D2 测速传档的真机读数（需真实录音/改档）；U03–U09、U13、U14、U17、U19–U24 见 `docs/internal/P2-真机验证-runbook-2026-11-22.md`。**发现**：`sync-runtime` 的「host 面无变化⇒免重启」只比较仓库构建前后，不比较运行目录旧字节 ⇒ 运行目录陈旧时不报警（本次据此仍需重启，已记录未改脚本）。
 - **梳理结果整理优化 · 批 3：P3 债卡与机检锁（2026-11-22 · 仅测试与治理文档）· [PE-F01/PE-F02/PE-F04]**：① 新建技术债卡 `docs/internal/技术债卡-梳理漂移12条-2026-11-22.md`：附录 A 的 12 条全部关闭（10 条修复 + 2 条经决策保持并写明），逐条带位置/处置/回归锁/证据，并列出「未关闭」项（U01–U24 真机项、部署复验、仓库外消费者、D4 长期口径）；② 新增 2 条机检锁防复发：`OVB-CLEAN-01`（`OVB_FLOOR_RISE`/`OVB_FLOOR_STALL_FRAMES`/`floorStall` 不得复活、`floorDb + 6 dB` 错注释不得回退、底噪上界实值仍须 `Math.pow(10,(fdb-5)/20)`）、`CI18N-06`（`cfgHint` 必须含 DSH 配置目录、`cfgContextNote` 必须含 2400、standard 不得写「不额外调用模型」、lite 必须写最近 1 轮会话，并锁 ZH/EN 键数平衡）；③ 治理对账：README/README.en/AGENTS/compatibility 已无「1–3 轮 / 三写入点 / 5 槽位」残留（grep 实测空）。
   - **已实测**：定向 168/168 pass（含 4 条新/既有锁）；全量 `npm test` **1051/1051 pass / 0 fail**（86.1s，较批 2 增 2 条）；`build-host --check` / `build-client --check` 双绿（本批未改 `src/**`）；`npm run gate --accept-unjudged=arch-claims,cards` **PASS 5 / FAIL 0 / SKIP 2**（退出码 0 来自基线接纳，非全判通过）。**未做**：P2 真机/部署验证（见债卡 §3）。
 
