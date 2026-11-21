@@ -48,7 +48,7 @@ dsh plugin --profile web add github:Fishsb/dsh-voice-prompt-enhancer#v3.5.1
 
 | 位置 | 内容 |
 |---|---|
-| 模型配置 | 模型链；语音识别：热键、静音监测（1–5 秒）、清口水词、语音纠错（可配参考 1–3 轮）、自动增强档位、环境噪声实测、学习词典 |
+| 模型配置 | 模型链；语音识别：热键、静音监测（1–5 秒）、清口水词、语音纠错（可配参考 0–5 轮，0=无参考）、自动增强档位、环境噪声实测、学习词典 |
 | 优化参数 | 优化模式、模板、记忆开关、上下文预算、超时 / 回复长度 / 输出上限 |
 
 录音采集、识别与写回都由 DSH 官方语音控件完成，插件只叠加上述增值。录音不落盘。
@@ -57,4 +57,4 @@ dsh plugin --profile web add github:Fishsb/dsh-voice-prompt-enhancer#v3.5.1
 
 [Releases](https://github.com/Fishsb/dsh-voice-prompt-enhancer/releases) · [CHANGELOG](CHANGELOG.md) · [兼容性说明](docs/compatibility-matrix.md) · Licensed under [Apache-2.0](LICENSE)
 
-> 隐私：插件不记录、不上报任何数据。但以下文本会**发给你自己配置的外部 LLM**：提示词增强的草稿（含按预算注入的工作区/会话片段）、语音纠错时的草稿与最近 1–3 轮会话文本（轮数可配）。发送前请自行核对。
+> 隐私：插件不记录、不上报任何数据。但以下文本会**发给你自己配置的外部 LLM**：提示词增强的草稿（含按预算注入的工作区/会话片段）、语音纠错时的草稿与最近 1–5 轮会话文本（轮数可配，0=无参考）。发送前请自行核对。

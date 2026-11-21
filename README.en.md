@@ -48,7 +48,7 @@ Settings → "Prompt Enhancer"; changes save immediately:
 
 | Where | What |
 |---|---|
-| Model chain | Model chain; Voice input: hotkey, stop-on-silence (1-5 s), filler removal, transcript correction (configurable 1-3 rounds), auto-enhance level, ambient-noise measurement, learning dictionary |
+| Model chain | Model chain; Voice input: hotkey, stop-on-silence (1-5 s), filler removal, transcript correction (configurable 0-5 rounds; 0 = no history), auto-enhance level, ambient-noise measurement, learning dictionary |
 | Optimization | Mode, template, memory switch, context budget, timeout / reply length / output limit |
 
 Capture, transcription and writing back are all handled by DSH's official voice control — the plugin only adds the value-adds above. Audio is not written to disk.
@@ -57,4 +57,4 @@ Capture, transcription and writing back are all handled by DSH's official voice 
 
 [Releases](https://github.com/Fishsb/dsh-voice-prompt-enhancer/releases) · [CHANGELOG](CHANGELOG.md) · [Compatibility notes](docs/compatibility-matrix.md) · Licensed under [Apache-2.0](LICENSE)
 
-> Privacy: the plugin records and reports nothing. However, the following text is sent to **the external LLM you configured**: the prompt-enhancement draft (plus workspace/session excerpts injected per budget), and — during voice correction — the draft together with the last 1-3 conversation rounds (configurable). Verify before sending.
+> Privacy: the plugin records and reports nothing. However, the following text is sent to **the external LLM you configured**: the prompt-enhancement draft (plus workspace/session excerpts injected per budget), and — during voice correction — the draft together with the last 1-5 conversation rounds (configurable; 0 = no history). Verify before sending.
