@@ -10,15 +10,9 @@ const {
 const { RPC_METHODS } = require('../../shared/contracts/rpc.cjs');
 
 const { errorKeyOf: contractErrorKey } = require('../../shared/contracts/errors.cjs');
-
-const MODEL_DISPLAY_NAMES = {
-  'deepseek-v4-flash': 'DeepSeek-V4-Flash',
-  'deepseek-v4-pro': 'DeepSeek-V4-Pro',
-  'mimo-v2.5': 'MiMo-V2.5',
-  'mimo-v2.5-pro': 'MiMo-V2.5-Pro',
-  'qwen3.7-max': 'Qwen3.7-Max',
-  'kimi-k2.7-code': 'Kimi-K2.7-Code',
-};
+// ⚠ 归属纪律（2026-11-21 · issue #16）：模型纯查表函数统一在 ./model-helpers.cjs 定义；
+//   本工厂只复用同一引用并作为 helpers API 暴露，⛔ 不在此重建第二个真值。
+const { prettifyModel } = require('./model-helpers.cjs');
 
 function createClientHelpers(deps) {
   const d = deps && typeof deps === 'object' ? deps : {};
@@ -237,10 +231,6 @@ function createClientHelpers(deps) {
       memory = { rounds: session.memoryRounds };
     }
     return { mode, seed, memory };
-  }
-
-  function prettifyModel(id) {
-    return MODEL_DISPLAY_NAMES[id] || id;
   }
 
   // UD-0052（2026-11-08 · 语音四件收口批）：第 5 个可选入参 `modeOverride` = 本次增强的档位覆盖。

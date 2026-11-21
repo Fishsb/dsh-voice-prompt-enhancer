@@ -29,7 +29,6 @@ function createEnhanceButton(deps) {
   const cancelEnhance = d.cancelEnhance;
   const undo = d.undo;
   const modeShortLabel = d.modeShortLabel;
-  const prettifyModel = d.prettifyModel;
   const timerSvc = d.timerSvc;
   const host = d.host;
   const correctionSnapshot = d.correctionSnapshot;
@@ -327,7 +326,7 @@ function EnhanceButton(props) {
             }, '✨'),
             React.createElement('span', { className: 'dsh-enh-mode' }, modeShortLabel(t, configState.value.mode)),
             ),
-            phase === 'result' ? (s && s.fallbackUsed === true && s.lastModel ? t('resultFallback').replace('{model}', prettifyModel(s.lastModel)) : t('result')) : null,
+            phase === 'result' ? t('result') : null,
           ),
   );
 }

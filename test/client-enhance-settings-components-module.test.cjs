@@ -59,7 +59,6 @@ function makeButtonDeps() {
     cancelEnhance: () => {},
     undo: () => {},
     modeShortLabel: (t, mode) => mode,
-    prettifyModel: (model) => model,
     timerSvc: null,
     host: { call: () => Promise.resolve({ ok: false }) },
     correctionSnapshot: () => null,

@@ -240,7 +240,7 @@ test('CHG184-S14 ⭐ 接线（R3 迁移）：纠错状态不再注册独立元�
       + '  subscribe, storeFor, notify, releaseStoreIfIdle, setLastDraft,\n'
       + '  subscribeConfig, subscribeCorrection, subscribeVoiceConfig, setActiveSession, getActiveSession,\n'
       + '  safeSetDraft, clearResultStore, clearSeen, guardPasses, saveConfig, configState, enhance,\n'
-      + '  cancelEnhance, undo, modeShortLabel, prettifyModel, timerSvc, host, correctionSnapshot,\n'
+      + '  cancelEnhance, undo, modeShortLabel, timerSvc, host, correctionSnapshot,\n'
       + '  correctionPhaseOf, CORRECTION_PHASES, correctionFailureTicket, consumeCorrectionFailure,\n'
       + '  correctionPhaseView,\n'
       + '  rpcMethods,\n'
@@ -417,7 +417,7 @@ function loadButton(opts) {
       + '  subscribe, storeFor, notify, releaseStoreIfIdle, setLastDraft,\n'
       + '  subscribeConfig, subscribeCorrection, subscribeVoiceConfig, setActiveSession, getActiveSession,\n'
       + '  safeSetDraft, clearResultStore, clearSeen, guardPasses, saveConfig, configState, enhance,\n'
-      + '  cancelEnhance, undo, modeShortLabel, prettifyModel, timerSvc, host, correctionSnapshot,\n'
+      + '  cancelEnhance, undo, modeShortLabel, timerSvc, host, correctionSnapshot,\n'
       + '  correctionPhaseOf, CORRECTION_PHASES, correctionFailureTicket, consumeCorrectionFailure,\n'
       + '  correctionPhaseView,\n'
       + '});\n');
@@ -439,7 +439,7 @@ function loadButton(opts) {
   const factory = new Function(
     'React', 'makeT', 'voiceCfgState', 'configState', 'subscribeCorrection', 'subscribeVoiceConfig', '__DSH_CORRECTION_STATE__',
     'subscribe', 'subscribeConfig', 'storeFor', 'timerSvc', 'host', 'setLastDraft', 'setActiveSession',
-    'getActiveSession', 'guardPasses', 'enhance', 'undo', 'modeShortLabel', 'prettifyModel', 'saveConfig',
+    'getActiveSession', 'guardPasses', 'enhance', 'undo', 'modeShortLabel', 'saveConfig',
     'dshEnhId', 'notify', 'releaseStoreIfIdle', 'safeSetDraft', 'clearResultStore', 'clearSeen',
     'cancelEnhance', 'consumeCorrectionFailure', 'correctionPhaseView',
     corr + '\n' + eb + '\n;return { EnhanceButton, markCorrectionStarted, markCorrectionSettled, markCorrectionFailed,'
@@ -454,7 +454,7 @@ function loadButton(opts) {
   const api = factory(
     mini.React, makeT, voiceCfgState, configState, () => () => {}, () => () => {}, CORRECTION_STATE,
     () => () => {}, () => () => {}, storeFor, timers.svc, { call: () => Promise.reject(new Error('只读')) },
-    () => {}, () => {}, () => null, () => true, () => {}, () => {}, (t, m) => m, (m) => m, () => {},
+    () => {}, () => {}, () => null, () => true, () => {}, () => {}, (t, m) => m, () => {},
     (p) => p, () => {}, () => {}, () => {}, () => {}, () => {}, () => {}, () => {}, () => null
   );
   return { api, mini, timers };
@@ -813,7 +813,7 @@ function loadButtonFromSrc(eb, corr, opts) {
   const factory = new Function(
     'React', 'makeT', 'voiceCfgState', 'configState', 'subscribeCorrection', 'subscribeVoiceConfig', '__DSH_CORRECTION_STATE__',
     'subscribe', 'subscribeConfig', 'storeFor', 'timerSvc', 'host', 'setLastDraft', 'setActiveSession',
-    'getActiveSession', 'guardPasses', 'enhance', 'undo', 'modeShortLabel', 'prettifyModel', 'saveConfig',
+    'getActiveSession', 'guardPasses', 'enhance', 'undo', 'modeShortLabel', 'saveConfig',
     corr + '\n' + eb + '\n;return { EnhanceButton, markCorrectionStarted, markCorrectionSettled, markCorrectionFailed,'
       // ⚠ 本工厂同时用于「当前源码」与「HEAD 原形」⇒ 新符号必须 typeof 兜底：
       //   否则拿 HEAD 源码求值时这里会抛 ReferenceError，让**整组**变异自证看起来"红了"，
@@ -826,7 +826,7 @@ function loadButtonFromSrc(eb, corr, opts) {
   const api = factory(
     mini.React, makeT, voiceCfgState, configState, () => () => {}, () => () => {}, CORRECTION_STATE,
     () => () => {}, () => () => {}, storeFor, timers.svc, { call: () => Promise.reject(new Error('只读')) },
-    () => {}, () => {}, () => null, () => true, () => {}, () => {}, (t, m) => m, (m) => m, () => {}
+    () => {}, () => {}, () => null, () => true, () => {}, () => {}, (t, m) => m, () => {}
   );
   return { api, mini, zh, timers };
 }

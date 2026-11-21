@@ -4,7 +4,6 @@ const ZH = {
   // 2026-08-18（用户需求）：llm 阶段显示正在优化的模型序号；重试精简（从 2 起「N 正在重试」）
   enhancingModel: '{n}正在优化',
   result: '撤销优化',
-  resultFallback: '撤销优化',
   titleIdle: '一键优化',
   // v2.6.2（继续优化）：已优化过一轮后修改草稿的按钮文字与提示
   btnContinue: '继续优化',
@@ -369,7 +368,6 @@ const EN = {
   // 2026-08-18（用户需求）：llm 阶段显示正在优化的模型序号；重试精简
   enhancingModel: '{n} optimizing',
   result: 'Undo',
-  resultFallback: 'Undo',
   titleIdle: 'Optimize prompt',
   // v2.6.2（继续优化）：已优化过一轮后修改草稿的按钮文字与提示
   btnContinue: 'Continue',

@@ -491,9 +491,12 @@ test('复核 medium·死键：truncated 与 degradedHint 均有**位置正确**�
     'truncated 未作为渲染条件被读取（死键）');
   assert.ok(client.includes("t('degradedHint')"), 'degradedHint 未作为 i18n 取值调用被引用（只出现于注释/未接线）');
   assert.ok(client.includes("t('degradedPrefix')"), 'degradedPrefix 未作为 i18n 取值调用被引用');
-  // ③ 正文表达式须与改前逐字一致（终审席的溢出根因项：正文不得加长）
-  assert.ok(client.includes("s && s.fallbackUsed === true && s.lastModel ? t('resultFallback').replace('{model}', prettifyModel(s.lastModel)) : t('result')"),
-    '结果态正文须保持与改前逐字一致（不得加长以免 nowrap 按钮溢出）');
+  // ③ 结果态正文必须走 t('result')：⛔ 不得再按 fallbackUsed 插入模型名（issue #16 死分支修复；
+  //    ≤6 字用户约束见 03a8a9b1f —— 加长会撑 nowrap 按钮）。同时锁住「产物不得再引用退役键」。
+  assert.ok(client.includes("phase === 'result' ? t('result') : null"),
+    '结果态正文必须走 t("result")（不得插入模型名/额外文案，避免 nowrap 按钮溢出）');
+  assert.equal(/t\('resultFallback'\)/.test(client), false,
+    'resultFallback 已随 issue #16 退役，产物不得再引用该键');
 });
 
 test('复核 medium·P0-a：always + timeoutMs=0（无限制）仍有安全上限，不依赖预算中断', () => {

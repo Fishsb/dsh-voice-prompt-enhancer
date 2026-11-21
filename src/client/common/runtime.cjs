@@ -2,6 +2,9 @@
 
 // 客户端共享运行时入口（普通 CommonJS；构建期由打包器内联）。
 // 这里的模块必须无浏览器/宿主环境依赖：纯契约、纯规则。
+// ⚠ 命名空间纪律（2026-11-21 · issue #16）：本文件只再导出「纯模块成员」与「工厂函数本身」。
+//   ⛔ 不得再导出 createClientHelpers(...) 的返回成员——那是实例闭包，工厂未调用时不存在，
+//   装配层从 shared 取它只会拿到 undefined（渲染期才炸）。纯函数请放对应纯模块再导出。
 const filler = require('../domains/voice/filler.cjs');
 const correctionState = require('../domains/voice/correction-state.cjs');
 const voiceHotkey = require('../domains/voice/hotkey.cjs');
@@ -37,6 +40,7 @@ module.exports = {
   correctionFailureTicket: correctionState.correctionFailureTicket,
   correctionFailureConsume: correctionState.correctionFailureConsume,
   buildCandidates: modelHelpers.buildCandidates,
+  prettifyModel: modelHelpers.prettifyModel,
   createClientState: clientState.createClientState,
   createClientHelpers: clientHelpers.createClientHelpers,
 };

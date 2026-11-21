@@ -20,6 +20,11 @@
 
 ## [Unreleased]
 
+- **修复：备用模型完成时 ✨ 按钮渲染崩溃（2026-11-21 · GitHub issue #16）—— 纯函数寄生状态工厂 + 装配面无契约 + 死分支承担副作用 · [PE-F01/PE-F02]**：配置兜底链后，主模型超时/失败、备用模型接手（`fallbackUsed=true`）⇒ 结果态渲染抛 `TypeError: prettifyModel is not a function`，DSH 桌面渲染进程随之崩溃。主模型正常路径不触发 ⇒ 表现为「偶发」，用户实报于 3.5.1。
+  - **根因（三层叠加，缺一层不会崩）**：① **归属**——`prettifyModel` 是纯查表函数（`MODEL_DISPLAY_NAMES[id] || id`）却定义在 `createClientHelpers` 的状态闭包里，而 `common/runtime.cjs` 只再导出工厂本身、**不导出工厂产物**；② **装配**——`app.cjs` 从 `shared` 取它 ⇒ `undefined`，全链**无任何「依赖必须存在」的机械校验**（dead-code R2 只扫旧字符串 chunk、R4 只判 `src/host`）；③ **语义**——结果态 fallback 分支的输出与普通分支**逐字相同**（`≤6 字`用户需求 `03a8a9b1f` 后 `resultFallback` ≡ `result`），即一段「输出恒定的死分支」承担了「必然崩溃」的副作用。跨版本实测：**v3.4.2 OK（旧 chunk 形态里该函数与调用点同闭包）/ v3.5.0 起回归（CHG-346）**。
+  - **修法（从执行逻辑修，不是补丁）**：① **删死分支**——结果态统一 `t('result')`，`resultFallback` 中英各 1 键退役；② **纯函数正位**——`MODEL_DISPLAY_NAMES` + `prettifyModel` 迁到 `common/model-helpers.cjs`（与 `buildCandidates` 同属模型纯函数），由 `runtime.cjs` 再导出，`helpers` 复用**同一引用**并继续作为 helpers API 暴露；③ **装配契约判据**——新增 `test/client-assembly-contract.test.cjs`（CAC-1 静态：`src/client/**` 的 `shared.<name>` 必须全部命中 `runtime.cjs` 导出键；CAC-2 动态：真实 `createClientApp` 下 16 个工厂 deps **不得有 undefined**；CAC-3 回归：真实装配 + `fallbackUsed=true` 结果态渲染不得抛、且与普通结果同形），三条各带负控（变异自证）；④ **夹具去掩蔽**——`correction-status` / `client-enhance-settings-components` 不再自造 `prettifyModel`（旧夹具正是它让 1042 条全绿也抓不到本缺陷），`p0-stop-bleed` 的旧表达式锁改为「结果态走 `t('result')` + 产物不得引用退役键」。
+  - **已实测**：修复前 CAC-1/2/3 三红（CAC-2 精确指出 `createEnhanceButton:prettifyModel`；CAC-3 抛 `TypeError`），修复后三绿 + 负控绿；跨版本对照 v3.4.2 OK / v3.5.1 THROW / 修复后 HEAD OK（同 harness 装载各自 `lib/client.cjs`）；`npm test` **1047/1047 pass / 0 fail**（87.2s，含新增 5 条）；`build --check` 双绿；`npm run gate` 读数见本轮记录。**未验证**：真实 DSH 桌面页面级复验（本机部署账本仍为 3.4.2，且未获部署/安装授权）。
+
 - **修复（续）：热键录制「按住 Alt 就立刻完成」（2026-11-18 · 用户复报，症状精确到按键）—— 修饰键判据用错了事件字段 · [PE-F04]**：点输入框能进「请按组合键…」，但**一按 Alt（还没按第二个键）就写入完成**。
   - **根因**：`onHotkeyKeyDown` 的修饰键判据是 `['Control','Alt','Shift','Meta'].indexOf(e.code) >= 0`。`KeyboardEvent.code` 对修饰键的真实值是 **`AltLeft`/`AltRight`/`ControlLeft`/`ControlRight`/`ShiftLeft`/`ShiftRight`/`MetaLeft`/`MetaRight`**（规范如此、与键盘布局无关），**短名 `'Alt'` 永远匹配不上** ⇒ 修饰键被当成「主键」⇒ 立刻写入 `Alt+AltLeft`。
   - **为什么「以前好像能用」**：该行自最初的 `domains/` 分层重构（`bdbfdcce8`）起就是这个形态，判据**一直没生效**；用户此前没在带修饰键的组合上踩到，本轮回报时才暴露。

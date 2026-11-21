@@ -118,7 +118,7 @@ function createClientApp(deps) {
     getActiveSession: helpers.getActiveSession, safeSetDraft: helpers.safeSetDraft, clearResultStore: helpers.clearResultStore,
     clearSeen: helpers.clearSeen, guardPasses: helpers.guardPasses, saveConfig: configApi.saveConfig, configState,
     enhance: helpers.enhance, cancelEnhance: helpers.cancelEnhance, undo: helpers.undo, modeShortLabel: shared.modeShortLabel,
-    prettifyModel: shared.prettifyModel, timerSvc, host: d.host, correctionSnapshot: correction.correctionSnapshot,
+    timerSvc, host: d.host, correctionSnapshot: correction.correctionSnapshot,
     correctionPhaseOf: correction.correctionPhaseOf, CORRECTION_PHASES: correction.CORRECTION_PHASES,
     correctionFailureTicket: correction.correctionFailureTicket, consumeCorrectionFailure: correction.consumeCorrectionFailure,
     correctionPhaseView: correction.correctionPhaseView, rpcMethods: contracts.RPC_METHODS,
